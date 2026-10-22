@@ -1,25 +1,68 @@
 # AI Loan Servicing — Blue Machines FDE Challenge
 
-Work in progress. Day 1: synthetic enterprise data.
+A conversational assistant for a large lender's loan customers: precise, customer-specific answers over
+enterprise systems (CRM, loan management, payments, policy, service operations), with authorized
+actions and a reusable platform for further workflows.
+
+## Architecture
+
+```
+ Customer ── text / voice ──▶  Agent loop (LLM)     ──▶  Tool layer  ──▶  Enterprise systems
+                               plans + explains          computes +        CRM · Loans · Payments
+                                                         enforces          Policy · Service Ops · Cards
+```
+
+- **Agent loop** (`engine/agent.py`): the LLM decides which tools to call, independent calls run in
+  parallel, replies stream token by token. Every turn records time to first token, model time and tool time.
+- **Model-agnostic** (`engine/llm.py`): the LLM sits behind a small provider interface. OpenAI is the
+  default (`LLM_PROVIDER=openai`, `OPENAI_MODEL`); another vendor plugs in by implementing the same interface. Tools, security,
+  confirmations and evaluation are identical whichever model runs.
+- **Tool layer** (`engine/tools/`): typed tools that combine systems and do all arithmetic in
+  `shared/finance.py`, applying policy rules from the policy system's machine-readable parameters. Each
+  result carries the rule checks and source records behind it, so answers are verifiable.
+- **Security**: the verified customer id is injected server-side, never supplied by the model; ownership
+  is checked on every id; actions return a proposal and only execute after the customer confirms in a
+  later turn; every tool call and action is audit-logged (`logs/audit.jsonl`).
+- **Resilience** (`engine/clients.py`): per-system timeouts, retries with backoff, circuit breaker,
+  policy caching. An unavailable system degrades the answer instead of failing the conversation.
+- **Packs** (`engine/packs.py`): a workflow is configuration (tool groups + domain instructions) over the
+  shared engine.
 
 ## Quick start
 
 ```bash
-python3 -m datagen.generate      # writes data/generated/*.json (deterministic, ~3s)
-python3 -m datagen.validate      # integrity checks + demo persona stories
-python3 -m pytest -q tests
+uv sync
+cp .env.example .env                      # add OPENAI_API_KEY
+uv run python -m datagen.generate         # synthetic data (deterministic)
+uv run python -m mock_systems.run         # terminal 1: six mock systems on ports 8101-8106
+uv run python -m engine.cli --phone +919800000001   # terminal 2: chat as Priya
 ```
 
-Requires Python 3.10+, no third-party packages for data generation.
+Tests and evaluation:
+
+```bash
+uv run pytest -q                          # math, data, tools, agent loop (no API key needed)
+uv run python -m datagen.validate         # data integrity + persona stories
+uv run python -m evals.run                # 16 graded conversations against the real model + latency report
+```
+
+Change a system's behaviour live (e.g. make payments slow and flaky for a demo):
+
+```bash
+curl -X PUT localhost:8103/admin/chaos -H 'content-type: application/json' -d '{"p50_ms": 1500, "error_rate": 0.3}'
+```
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `shared/finance.py` | Deterministic loan math (EMI, amortization with rate resets and prepayments, prepayment impact). Used by the generator now and by the query engine's tools later, so the LLM never does arithmetic. |
-| `data/policies/` | Hand-authored policy clauses with IDs, versions and machine-readable `params` (one superseded version included on purpose). Served by the Policy Knowledge system. |
-| `datagen/` | Generator, demo personas, validator. |
-| `data/generated/` | One file per backend system (git-ignored; regenerate any time). |
+| `shared/finance.py` | Deterministic loan math (EMI, amortization with rate resets and prepayments, prepayment impact). |
+| `data/policies/` | Versioned policy clauses with machine-readable `params` (one superseded version on purpose). |
+| `datagen/` | Synthetic data generator, demo personas, validator. |
+| `mock_systems/` | One FastAPI app per enterprise system, with fault injection and idempotent writes. |
+| `engine/` | Resilient clients, tool registry and confirmation gate, tool packs, agent loop, terminal client. |
+| `evals/` | Graded conversations and the latency/accuracy runner. |
+| `tests/` | Unit and integration tests (in-process systems, scripted model). |
 
 ## Generated systems
 
