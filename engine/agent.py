@@ -64,7 +64,8 @@ class Agent:
         )
 
     async def respond(self, user_text: str, on_text: Callable[[str], None] | None = None,
-                      on_tool: Callable[[str, dict], None] | None = None) -> TurnResult:
+                      on_tool: Callable[[str, dict], None] | None = None,
+                      on_tool_result: Callable[[str, dict], None] | None = None) -> TurnResult:
         if self.snapshot is None:
             await self.start()
         self.session.begin_turn()
@@ -107,6 +108,9 @@ class Agent:
             tools_started = time.perf_counter()
             outputs = await asyncio.gather(*(self._run_tool(c) for c in step.tool_calls))
             m.tools_ms += (time.perf_counter() - tools_started) * 1000
+            if on_tool_result:
+                for c, o in zip(step.tool_calls, outputs):
+                    on_tool_result(c.name, o)
             self.history += self.provider.tool_results(step.tool_calls, outputs)
             result.tool_calls += [{"name": c.name, "input": c.input, "ok": o["ok"], "error": o.get("error"),
                                    "status": o.get("status")} for c, o in zip(step.tool_calls, outputs)]

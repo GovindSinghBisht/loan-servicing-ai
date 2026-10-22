@@ -30,13 +30,27 @@ actions and a reusable platform for further workflows.
 
 ## Quick start
 
+Requires Python 3.10+ with [uv](https://docs.astral.sh/uv/), and Node.js 20+.
+
 ```bash
 uv sync
 cp .env.example .env                      # add OPENAI_API_KEY
 uv run python -m datagen.generate         # synthetic data (deterministic)
-uv run python -m mock_systems.run         # terminal 1: six mock systems on ports 8101-8106
-uv run python -m engine.cli --phone +919800000001   # terminal 2: chat as Priya
 ```
+
+Then, in three terminals:
+
+```bash
+uv run python -m mock_systems.run                 # 1: six mock systems on ports 8101-8106
+uv run uvicorn engine.server:app --port 8000      # 2: assistant API
+cd web && npm install && npm run dev              # 3: web app on http://localhost:3000
+```
+
+Sign in with a demo customer (OTP `123456`). A terminal client is also available:
+`uv run python -m engine.cli --phone +919800000001`.
+
+To work on the UI without an LLM key, run `uv run python -m tests.offline_server` instead of terminal 2:
+a keyword-routed stand-in that calls the real tools.
 
 Tests and evaluation:
 
@@ -60,7 +74,8 @@ curl -X PUT localhost:8103/admin/chaos -H 'content-type: application/json' -d '{
 | `data/policies/` | Versioned policy clauses with machine-readable `params` (one superseded version on purpose). |
 | `datagen/` | Synthetic data generator, demo personas, validator. |
 | `mock_systems/` | One FastAPI app per enterprise system, with fault injection and idempotent writes. |
-| `engine/` | Resilient clients, tool registry and confirmation gate, tool packs, agent loop, terminal client. |
+| `engine/` | Resilient clients, tool registry and confirmation gate, tool packs, agent loop, LLM providers, web API (`server.py`), terminal client. |
+| `web/` | Customer web app (Next.js, React, Tailwind): chat with live progress, sources, confirmations, account panel. |
 | `evals/` | Graded conversations and the latency/accuracy runner. |
 | `tests/` | Unit and integration tests (in-process systems, scripted model). |
 
