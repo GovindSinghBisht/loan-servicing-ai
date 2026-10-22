@@ -40,8 +40,8 @@
     {
       "id": "LP-PRE-003", "version": 1, "status": "ACTIVE", "effective_from": "2022-04-01", "effective_to": null,
       "category": "PREPAYMENT", "products": ["HOME_LOAN", "LAP", "PERSONAL_LOAN"],
-      "title": "Dues must be cleared before prepayment or foreclosure",
-      "text": "A part-prepayment or foreclosure request is accepted only when there are no overdue instalments or unpaid charges on the loan. Overdue amounts must be cleared first.",
+      "title": "Dues must be cleared before part-prepayment",
+      "text": "A part-prepayment request is accepted only when there are no overdue instalments or unpaid charges on the loan. Overdue amounts must be cleared first. For foreclosure, overdue amounts are included in the foreclosure amount (LP-FCL-003).",
       "params": { "requires_no_overdue": true, "requires_no_unpaid_charges": true }
     },
     {

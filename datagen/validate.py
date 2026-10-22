@@ -106,7 +106,7 @@ def check_personas(db: dict) -> None:
 
     # Priya: EMI rose in October because of the EBLR hike; 2 failed EMIs in 6 months, one waived as bank-side.
     sep, oct_ = row("HL1000001", "2026-09-05"), row("HL1000001", "2026-10-05")
-    check(oct_["emi"] > sep["emi"] and "RATE_RESET" in " ".join(oct_["events"]), "Priya: Oct EMI should rise on rate reset")
+    check(oct_["emi"] > sep["emi"] and any(e["type"] == "RATE_RESET" for e in oct_["events"]), "Priya: Oct EMI should rise on rate reset")
     fails = [p for p in payments if p["loan_id"] == "HL1000001" and p["status"] == "FAILED" and p["value_date"] >= six_months_ago]
     check(len(fails) == 2, f"Priya: expected 2 failed payments in last 6 months, got {len(fails)}")
     waived = [c for c in charges if c["loan_id"] == "HL1000001" and c["status"] == "WAIVED"]
@@ -121,7 +121,7 @@ def check_personas(db: dict) -> None:
 
     # Kavya: rate hike extended tenure, EMI unchanged; duplicate debit pending refund, SLA breached; open card dispute.
     sep, oct_ = row("LP1000003", "2026-09-05"), row("LP1000003", "2026-10-05")
-    check(oct_["emi"] == sep["emi"] and "tenure" in " ".join(oct_["events"]), "Kavya: Oct reset should change tenure, not EMI")
+    check(oct_["emi"] == sep["emi"] and any("remaining_months_to" in e for e in oct_["events"]), "Kavya: Oct reset should change tenure, not EMI")
     dup = [p for p in payments if p["loan_id"] == "LP1000003" and p.get("duplicate_of")]
     check(len(dup) == 1 and dup[0]["refund_status"] == "PENDING", "Kavya: expected one duplicate debit pending refund")
     check(tickets["SR0000001"]["sla_breached"], "Kavya: SR0000001 should have breached SLA")

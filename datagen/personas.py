@@ -3,7 +3,7 @@
 | Customer      | Built to answer                                                                 |
 |---------------|---------------------------------------------------------------------------------|
 | Priya Sharma  | "Why did my EMI increase?", failed payments in 6 months, prepay Rs 50,000, waiver |
-| Arjun Mehta   | Foreclosure blocked (lock-in + overdue); card late fee after autopay failure       |
+| Arjun Mehta   | Prepay blocked (lock-in + overdue), foreclose blocked (lock-in); card late fee     |
 | Kavya Iyer    | Rate hike extended tenure, not EMI; duplicate debit with breached SLA; card dispute |
 | Rohan Gupta   | Two loans (which one?); "what are my options" with prepayment charges              |
 """

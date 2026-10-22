@@ -69,7 +69,7 @@ class Instalment:
     principal: float
     closing_principal: float
     broken_period_interest: float = 0.0
-    events: list[str] = field(default_factory=list)
+    events: list[dict] = field(default_factory=list)  # RATE_RESET | PART_PREPAYMENT | BROKEN_PERIOD_INTEREST
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -109,37 +109,41 @@ def build_schedule(
     while outstanding > 0.005:
         if n > 1000:
             raise RuntimeError("schedule did not converge")
-        events: list[str] = []
+        events: list[dict] = []
 
         while pending_rates and pending_rates[0].effective < due:
             rc = pending_rates.pop(0)
             if rc.annual_rate_pct == rate:
                 continue
             old_rate, rate = rate, rc.annual_rate_pct
+            ev = {"type": "RATE_RESET", "effective": rc.effective.isoformat(), "from_rate": old_rate, "to_rate": rate,
+                  "reason": rc.reason, "applied_as": reset_mode}
             if reset_mode == "EMI":
                 old_emi, cur_emi = cur_emi, round(emi(outstanding, rate, remaining))
-                events.append(f"RATE_RESET {old_rate}%->{rate}% ({rc.reason}); EMI {old_emi}->{cur_emi}")
+                events.append({**ev, "emi_from": old_emi, "emi_to": cur_emi})
             else:
                 try:
                     new_rem = remaining_tenure(outstanding, rate, cur_emi)
                 except ValueError:
                     new_rem = None
                 if new_rem is not None and (max_tenure_months is None or n - 1 + new_rem <= max_tenure_months):
-                    events.append(f"RATE_RESET {old_rate}%->{rate}% ({rc.reason}); tenure {remaining}->{new_rem} months")
+                    events.append({**ev, "remaining_months_from": remaining, "remaining_months_to": new_rem})
                     remaining = new_rem
                 else:
                     old_emi, cur_emi = cur_emi, round(emi(outstanding, rate, remaining))
-                    events.append(f"RATE_RESET {old_rate}%->{rate}% ({rc.reason}); EMI {old_emi}->{cur_emi} (max tenure reached)")
+                    events.append({**ev, "applied_as": "EMI", "emi_from": old_emi, "emi_to": cur_emi,
+                                   "note": "max tenure reached, EMI revised instead"})
 
         while pending_prepay and pending_prepay[0].on < due:
             pp = pending_prepay.pop(0)
             outstanding = round(outstanding - pp.amount, 2)
+            ev = {"type": "PART_PREPAYMENT", "on": pp.on.isoformat(), "amount": pp.amount, "mode": pp.mode}
             if pp.mode == "REDUCE_EMI":
                 old_emi, cur_emi = cur_emi, round(emi(outstanding, rate, remaining))
-                events.append(f"PART_PREPAYMENT {pp.amount:.0f}; EMI {old_emi}->{cur_emi}")
+                events.append({**ev, "emi_from": old_emi, "emi_to": cur_emi})
             else:
                 old_rem, remaining = remaining, remaining_tenure(outstanding, rate, cur_emi)
-                events.append(f"PART_PREPAYMENT {pp.amount:.0f}; tenure {old_rem}->{remaining} months")
+                events.append({**ev, "remaining_months_from": old_rem, "remaining_months_to": remaining})
 
         interest = round(outstanding * rate / 1200, 2)
         principal_part = round(cur_emi - interest, 2)
@@ -153,7 +157,8 @@ def build_schedule(
             days = (cycle_start - disbursal_date).days
             if days > 0:
                 bpi = round(principal * rate / 100 * days / 365, 2)
-                events.append(f"BROKEN_PERIOD_INTEREST {days} days")
+                events.append({"type": "BROKEN_PERIOD_INTEREST", "from": disbursal_date.isoformat(),
+                               "to": cycle_start.isoformat(), "days": days, "amount": bpi})
 
         closing = round(outstanding - principal_part, 2)
         schedule.append(Instalment(
