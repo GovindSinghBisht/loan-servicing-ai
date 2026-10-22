@@ -1,0 +1,58 @@
+{
+  "domain": "CARDS",
+  "globals": { "gst_pct": 18 },
+  "clauses": [
+    {
+      "id": "CP-FEE-001", "version": 1, "status": "ACTIVE", "effective_from": "2023-10-01", "effective_to": null,
+      "category": "CHARGES", "products": ["CREDIT_CARD"],
+      "title": "Late payment fee",
+      "text": "A late payment fee is levied when the minimum amount due is not paid within 3 days after the payment due date. The fee depends on the total amount due on the statement: up to Rs 500 nil; Rs 501-5,000 Rs 500; Rs 5,001-10,000 Rs 750; Rs 10,001-25,000 Rs 950; Rs 25,001-50,000 Rs 1,100; above Rs 50,000 Rs 1,300. GST applies.",
+      "params": {
+        "grace_days_after_due": 3,
+        "slabs": [
+          { "total_due_max": 500, "fee": 0 },
+          { "total_due_max": 5000, "fee": 500 },
+          { "total_due_max": 10000, "fee": 750 },
+          { "total_due_max": 25000, "fee": 950 },
+          { "total_due_max": 50000, "fee": 1100 },
+          { "total_due_max": null, "fee": 1300 }
+        ]
+      }
+    },
+    {
+      "id": "CP-INT-001", "version": 1, "status": "ACTIVE", "effective_from": "2023-10-01", "effective_to": null,
+      "category": "INTEREST", "products": ["CREDIT_CARD"],
+      "title": "Finance charges on revolving balance",
+      "text": "If the total amount due is not paid in full by the due date, finance charges of 3.75% per month apply on the outstanding balance from the date of each transaction until it is paid in full.",
+      "params": { "pct_per_month": 3.75 }
+    },
+    {
+      "id": "CP-FEE-002", "version": 1, "status": "ACTIVE", "effective_from": "2024-04-01", "effective_to": null,
+      "category": "CHARGES", "products": ["CREDIT_CARD"],
+      "title": "Goodwill reversal of late fee",
+      "text": "One late payment fee may be reversed on request in any rolling 12-month period if the overdue amount was paid within 7 days of the due date.",
+      "params": { "max_per_rolling_months": 1, "window_months": 12, "paid_within_days_of_due": 7 }
+    },
+    {
+      "id": "CP-AP-001", "version": 1, "status": "ACTIVE", "effective_from": "2023-10-01", "effective_to": null,
+      "category": "PAYMENTS", "products": ["CREDIT_CARD"],
+      "title": "Autopay failures",
+      "text": "If an autopay debit fails, it is not retried automatically. The customer is notified and must pay through another channel before the due date to avoid late fees and finance charges.",
+      "params": { "auto_retry": false }
+    },
+    {
+      "id": "CP-DSP-001", "version": 1, "status": "ACTIVE", "effective_from": "2023-10-01", "effective_to": null,
+      "category": "DISPUTES", "products": ["CREDIT_CARD"],
+      "title": "Transaction disputes",
+      "text": "A transaction may be disputed within 60 days of the transaction date. If the dispute is not resolved within 10 days, a temporary credit is posted. Disputes are resolved within 45 days.",
+      "params": { "raise_within_days": 60, "temporary_credit_after_days": 10, "resolve_within_days": 45 }
+    },
+    {
+      "id": "CP-BLK-001", "version": 1, "status": "ACTIVE", "effective_from": "2023-10-01", "effective_to": null,
+      "category": "SECURITY", "products": ["CREDIT_CARD"],
+      "title": "Blocking a card",
+      "text": "A card can be blocked immediately on request. For unauthorised transactions reported within 3 working days, the customer has zero liability.",
+      "params": { "zero_liability_report_within_working_days": 3 }
+    }
+  ]
+}
