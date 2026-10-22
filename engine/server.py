@@ -40,6 +40,7 @@ from pydantic import BaseModel  # noqa: E402
 from .agent import Agent  # noqa: E402
 from .clients import NotFound, Systems  # noqa: E402
 from .core import Session, execute  # noqa: E402
+from .packs import packs_for  # noqa: E402
 from .llm import Provider  # noqa: E402
 import engine.tools  # noqa: E402,F401
 
@@ -65,6 +66,13 @@ TOOL_LABELS = {
     "raise_payment_dispute": "Preparing payment dispute",
     "list_service_requests": "Checking your service requests",
     "escalate_service_request": "Preparing escalation",
+    "get_card_details": "Checking your card",
+    "explain_card_charges": "Checking your card statements and fee rules",
+    "get_card_transactions": "Checking card transactions",
+    "check_late_fee_reversal": "Checking late fee reversal eligibility",
+    "request_late_fee_reversal": "Preparing late fee reversal",
+    "raise_card_dispute": "Preparing transaction dispute",
+    "block_card": "Preparing card block",
     "confirm_action": "Submitting your request",
     "cancel_action": "Cancelling",
 }
@@ -77,6 +85,8 @@ VOICE_FILLERS = {
     "foreclosure_quote": "Let me calculate the closure amount.",
     "get_loan_options": "Let me see what options you have.",
     "list_service_requests": "Let me pull up your requests.",
+    "explain_card_charges": "Let me look at your card statements.",
+    "get_card_transactions": "Let me check your card transactions.",
     "confirm_action": "Submitting that now.",
 }
 DEFAULT_FILLER = "One moment, let me check."
@@ -161,13 +171,15 @@ async def login(body: Login):
     except NotFound:
         raise HTTPException(404, "No customer is registered with this mobile number.")
     session = Session(customer_id=customer["customer_id"], systems=systems, channel=body.channel)
+    overview = await execute(session, "get_customer_overview", {})
+    packs = packs_for(overview.get("data") or {})
     provider: Provider | None = provider_factory() if provider_factory else None
-    agent = Agent(session, provider=provider)
-    snapshot = await agent.start()
+    agent = Agent(session, pack=packs, provider=provider)
+    snapshot = await agent.start(overview)
     sid = secrets.token_urlsafe(24)
     state["sessions"][sid] = Live(agent)
-    session.log("login", channel=body.channel)
-    return {"session_id": sid, "customer": snapshot.get("customer"), "account": snapshot}
+    session.log("login", channel=body.channel, packs=packs)
+    return {"session_id": sid, "customer": snapshot.get("customer"), "account": snapshot, "packs": packs}
 
 
 @app.get("/api/sessions/{sid}/account")

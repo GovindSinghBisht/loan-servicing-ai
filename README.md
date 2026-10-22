@@ -26,7 +26,11 @@ actions and a reusable platform for further workflows.
 - **Resilience** (`engine/clients.py`): per-system timeouts, retries with backoff, circuit breaker,
   policy caching. An unavailable system degrades the answer instead of failing the conversation.
 - **Packs** (`engine/packs.py`): a workflow is configuration (tool groups + domain instructions) over the
-  shared engine.
+  shared engine. Two ship: loan servicing and credit card servicing (`engine/tools/cards.py`: charge
+  explanations, late fee reversal, transaction disputes, card block). A session gets the packs that match
+  what the customer holds, so a customer with a loan and a card talks to one assistant. The card workflow
+  was one new tools file (~250 lines) and a pack entry; clients, scoping, policy lookup, confirmations,
+  tickets, audit, the agent loop, web and voice were reused unchanged.
 - **Voice** (`web/src/lib/speech.ts`, `web/src/components/useVoice.ts`): the same session, tools and
   history as text; only the reply style changes. Streaming speech recognition in the browser, replies
   spoken sentence by sentence as they stream (OpenAI `gpt-4o-mini-tts`, browser voice as fallback).

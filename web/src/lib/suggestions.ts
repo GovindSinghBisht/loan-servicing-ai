@@ -7,14 +7,16 @@ const BY_CUSTOMER: Record<string, string[]> = {
     "Can you waive my May bounce charge?",
   ],
   CUST100002: [
+    "Why was I charged a late fee on my card?",
+    "Can you reverse that late fee?",
     "Am I eligible for foreclosure without a penalty?",
     "What happens if I prepay ₹50,000?",
-    "What do I owe right now?",
   ],
   CUST100003: [
     "Rates went up but my EMI didn't change. Why?",
     "My October EMI was debited twice",
-    "What's the status of my complaints?",
+    "What's happening with my card dispute?",
+    "I lost my credit card, please block it",
   ],
   CUST100004: [
     "What's my EMI?",

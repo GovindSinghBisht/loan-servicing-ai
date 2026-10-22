@@ -18,7 +18,8 @@ load_dotenv()
 
 from .agent import Agent  # noqa: E402
 from .clients import NotFound, Systems  # noqa: E402
-from .core import Session  # noqa: E402
+from .core import Session, execute  # noqa: E402
+from .packs import packs_for  # noqa: E402
 import engine.tools  # noqa: E402,F401
 
 DIM, CYAN, RESET = "\033[2m", "\033[36m", "\033[0m"
@@ -36,7 +37,7 @@ def latency_line(r) -> str:
 async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--phone", default="+919800000001", help="registered mobile of a demo customer")
-    ap.add_argument("--pack", default="loans")
+    ap.add_argument("--pack", default=None, help="comma-separated packs; default: from the customer's products")
     args = ap.parse_args()
 
     systems = Systems()
@@ -46,8 +47,10 @@ async def main() -> None:
         sys.exit(f"No customer with phone {args.phone}")
     print(f"{DIM}OTP verified (demo) · {customer['first_name']} {customer['last_name']} · {customer['customer_id']}{RESET}")
 
-    agent = Agent(Session(customer_id=customer["customer_id"], systems=systems), args.pack)
-    await agent.start()
+    session = Session(customer_id=customer["customer_id"], systems=systems)
+    overview = await execute(session, "get_customer_overview", {})
+    agent = Agent(session, args.pack.split(",") if args.pack else packs_for(overview.get("data") or {}))
+    await agent.start(overview)
     print("Type a question, or 'quit'.\n")
     try:
         while True:

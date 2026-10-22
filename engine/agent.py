@@ -15,7 +15,7 @@ from typing import Callable
 from .clients import Span, start_trace
 from .core import Session, execute, tools_for
 from .llm import Prompt, Provider, ToolCall, make_provider
-from .packs import CHANNEL_PROMPTS, PACKS, PLATFORM_PROMPT, Pack
+from .packs import CHANNEL_PROMPTS, PACKS, PLATFORM_PROMPT, Pack, compose
 
 MAX_STEPS = 8
 WRITE_TOOLS = {"confirm_action"}  # once started, these finish even if the customer interrupts
@@ -44,19 +44,21 @@ class TurnResult:
 
 
 class Agent:
-    def __init__(self, session: Session, pack: Pack | str = "loans", provider: Provider | None = None):
+    def __init__(self, session: Session, pack: Pack | str | list[str] = "loans", provider: Provider | None = None):
         self.session = session
-        self.pack = PACKS[pack] if isinstance(pack, str) else pack
+        self.pack = compose(pack) if isinstance(pack, list) else PACKS[pack] if isinstance(pack, str) else pack
         self.provider = provider or make_provider(tools_for(set(self.pack.tool_groups)))
         self.history: list = []
         self.snapshot: dict | None = None
         self._interrupted = False
 
-    async def start(self) -> dict:
-        """Load the customer snapshot once per session so most turns start with context already in hand."""
-        start_trace()
-        r = await execute(self.session, "get_customer_overview", {})
-        self.snapshot = r.get("data") or {"unavailable": r.get("message")}
+    async def start(self, overview: dict | None = None) -> dict:
+        """Load the customer snapshot once per session so most turns start with context already in hand.
+        Pass an overview result already fetched (e.g. to choose packs) to avoid loading it twice."""
+        if overview is None:
+            start_trace()
+            overview = await execute(self.session, "get_customer_overview", {})
+        self.snapshot = overview.get("data") or {"unavailable": overview.get("message")}
         return self.snapshot
 
     def _prompt(self) -> Prompt:

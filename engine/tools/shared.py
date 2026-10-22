@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date
 
 from ..clients import NotFound
-from ..core import Session, ToolError
+from ..core import Session, ToolError, ToolResult
 
 
 async def owned_loan(s: Session, loan_id: str) -> dict:
@@ -58,3 +58,12 @@ def check(rule: str, passed: bool, detail: str) -> dict:
 
 def r2(x: float) -> float:
     return round(x, 2)
+
+
+async def create_ticket(s: Session, category: str, entity: dict, description: str, details: dict, key: str) -> ToolResult:
+    """Raise a service request on the customer's behalf. `key` makes retries idempotent."""
+    t = await s.systems.service_ops.post("/tickets", {
+        "customer_id": s.customer_id, "category": category, "related_entity": entity, "description": description,
+        "channel": "AI_VOICE" if s.channel == "voice" else "AI_CHAT", "details": details}, idempotency_key=key)
+    return ToolResult({k: t[k] for k in ("ticket_id", "category", "status", "assigned_team", "sla_due_on")},
+                      [f"service_ops:{t['ticket_id']}"])

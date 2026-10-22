@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from shared.finance import add_months, prepayment_impact
 
 from ..core import Proposal, Session, ToolError, ToolResult, tool
-from .shared import by_id, check, cite, clauses, customer_loans, fy_start, match, owned_loan, r2
+from .shared import by_id, check, cite, clauses, create_ticket, customer_loans, fy_start, match, owned_loan, r2
 
 PACK = ("loans",)
 GST = 0.18
@@ -399,14 +399,6 @@ async def check_charge_waiver(s: Session, a: ChargeRef) -> ToolResult:
 # Actions (each returns a Proposal; executed only after the customer confirms)
 # ---------------------------------------------------------------------------------------------------------
 
-async def _ticket(s: Session, category: str, entity: dict, description: str, details: dict, key: str) -> ToolResult:
-    t = await s.systems.service_ops.post("/tickets", {
-        "customer_id": s.customer_id, "category": category, "related_entity": entity, "description": description,
-        "channel": "AI_VOICE" if s.channel == "voice" else "AI_CHAT", "details": details}, idempotency_key=key)
-    return ToolResult({k: t[k] for k in ("ticket_id", "category", "status", "assigned_team", "sla_due_on")},
-                      [f"service_ops:{t['ticket_id']}"])
-
-
 @tool("Raise a goodwill waiver request for a bounce charge (checks eligibility first). Requires confirmation.",
       ChargeRef, kind="action", packs=PACK)
 async def request_charge_waiver(s: Session, a: ChargeRef) -> Proposal:
@@ -417,7 +409,7 @@ async def request_charge_waiver(s: Session, a: ChargeRef) -> Proposal:
         summary=f"Raise a waiver request for the Rs {charge['total']:,.0f} bounce charge on loan {loan['loan_id']} "
                 f"(levied {charge['levied_on']}). Loan servicing decides within 5 working days.",
         details={"charge_id": a.charge_id, "loan_id": loan["loan_id"], "amount": charge["total"]},
-        run=lambda: _ticket(s, "BOUNCE_CHARGE_WAIVER", {"type": "CHARGE", "id": a.charge_id, "loan_id": loan["loan_id"]},
+        run=lambda: create_ticket(s, "BOUNCE_CHARGE_WAIVER", {"type": "CHARGE", "id": a.charge_id, "loan_id": loan["loan_id"]},
                             f"Goodwill waiver requested for bounce charge {a.charge_id} (Rs {charge['total']}).",
                             {"policy": cite(ev["rule"]), "checks": ev["checks"]}, f"{s.session_id}:waiver:{a.charge_id}"),
     )
@@ -442,7 +434,7 @@ async def request_prepayment(s: Session, a: PrepayRequestArgs) -> Proposal:
         summary=f"Part-prepay Rs {a.amount:,.0f} on {a.loan_id} ({a.mode.replace('_', ' ').lower()}), charges "
                 f"Rs {terms['charges']:,.0f}. A payment link will be sent to the registered mobile.",
         details=terms,
-        run=lambda: _ticket(s, "PREPAYMENT_REQUEST", {"type": "LOAN", "id": a.loan_id},
+        run=lambda: create_ticket(s, "PREPAYMENT_REQUEST", {"type": "LOAN", "id": a.loan_id},
                             f"Part-prepayment of Rs {a.amount:,.0f} ({a.mode}).", terms,
                             f"{s.session_id}:prepay:{a.loan_id}:{a.amount}:{a.mode}"),
     )
@@ -475,6 +467,6 @@ async def raise_payment_dispute(s: Session, a: DisputeArgs) -> Proposal | ToolRe
         summary=f"Raise a dispute for the Rs {pay['amount']:,.0f} debit on {pay['value_date']} ({a.payment_id}). "
                 f"Confirmed duplicates are refunded within {rule['params']['refund_within_working_days']} working days.",
         details={"payment_id": a.payment_id, "loan_id": loan["loan_id"], "amount": pay["amount"], "reason": a.reason},
-        run=lambda: _ticket(s, "PAYMENT_DISPUTE", {"type": "LOAN", "id": loan["loan_id"], "payment_id": a.payment_id},
+        run=lambda: create_ticket(s, "PAYMENT_DISPUTE", {"type": "LOAN", "id": loan["loan_id"], "payment_id": a.payment_id},
                             a.reason, {"policy": cite(rule)}, f"{s.session_id}:dispute:{a.payment_id}"),
     )

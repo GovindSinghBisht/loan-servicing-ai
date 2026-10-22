@@ -52,4 +52,33 @@ PACKS = {
                      "disputes and service request status. For 'what if I prepay X' use the prepayment quote; for "
                      "'what are my options' use the loan options tool.",
     ),
+    "cards": Pack(
+        name="cards",
+        title="Credit card servicing",
+        tool_groups=frozenset({"core", "cards"}),
+        instructions="Domain: credit cards. Typical needs: why a fee or interest was charged, what is due and when, "
+                     "recent spending, disputing a transaction, reversing a late fee, blocking a lost or misused card. "
+                     "For any fee or interest question use the card charges explanation. If the customer says the card "
+                     "is lost, stolen or being misused, offer to block it straight away.",
+    ),
 }
+
+
+def compose(names: list[str]) -> Pack:
+    """One assistant over several workflows: union of tool groups, domain notes concatenated."""
+    chosen = [PACKS[n] for n in names]
+    if len(chosen) == 1:
+        return chosen[0]
+    return Pack(
+        name="+".join(p.name for p in chosen),
+        title=" and ".join(p.title for p in chosen),
+        tool_groups=frozenset().union(*(p.tool_groups for p in chosen)),
+        instructions="\n\n".join(p.instructions for p in chosen),
+    )
+
+
+def packs_for(snapshot: dict) -> list[str]:
+    """Enable the workflows that match what the customer actually holds."""
+    names = [n for n, held in (("loans", snapshot.get("loans") or snapshot.get("closed_loans")),
+                               ("cards", snapshot.get("cards"))) if held]
+    return names or ["loans"]

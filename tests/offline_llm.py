@@ -56,6 +56,21 @@ class OfflineProvider:
 
     def _route(self, text: str, snapshot: dict, history: list) -> list[ToolCall]:
         t = text.lower()
+        cards = snapshot.get("cards") or []
+        if cards and re.search(r"card|late fee|revers", t):
+            cid = {"card_id": cards[0]["card_id"]}
+            if re.search(r"\b(yes|confirm|go ahead|sure)\b", t):
+                pass  # fall through to the generic confirm below
+            elif "block" in t or "lost" in t or "stolen" in t:
+                return [ToolCall(self._id(), "block_card", {**cid, "reason": text})]
+            elif "revers" in t or "waive" in t:
+                return [ToolCall(self._id(), "request_late_fee_reversal", cid)]
+            elif "dispute" in t:
+                return [ToolCall(self._id(), "get_card_transactions", {**cid, "disputed_only": True})]
+            elif "fee" in t or "charge" in t or "interest" in t:
+                return [ToolCall(self._id(), "explain_card_charges", cid)]
+            else:
+                return [ToolCall(self._id(), "get_card_details", cid)]
         loans = snapshot.get("loans") or []
         loan = next((l for l in loans if l["product"].split("_")[0].lower() in t), loans[0] if loans else None)
         lid = {"loan_id": loan["loan_id"]} if loan else {}
@@ -122,7 +137,29 @@ class OfflineProvider:
             return "Your requests: " + "; ".join(f"{t['ticket_id']} {t['category'].replace('_', ' ').lower()} "
                                                  f"({t['status'].lower()})" for t in d["tickets"][:4]) + "."
         if name == "confirm_action":
+            if d.get("status") == "BLOCKED":
+                return "Your card is now blocked and can't be used. You're not liable for unauthorised use reported now."
             return f"Done. Your reference is {d.get('ticket_id')}" + (f", due by {d['sla_due_on']}." if d.get("sla_due_on") else ".")
+        if name == "explain_card_charges":
+            fee = d.get("late_fee")
+            if not fee:
+                return "There are no late fees or interest on your recent card statements."
+            why = (f"the autopay on {fee['payment_due_date']} failed ({fee['failed_payment_attempts'][0]['failure_reason'].lower()})"
+                   if fee["failed_payment_attempts"] else f"the payment due {fee['payment_due_date']} was late")
+            return (f"You were charged a late fee of {_rs(fee['fee'])} plus {_rs(fee['gst'])} GST because {why} and the "
+                    f"bill was paid on {fee['paid_on']}, {fee['days_after_due']} days after the due date, beyond the "
+                    f"{fee['grace_days']}-day grace period.")
+        if name == "get_card_transactions":
+            disputed = [t for t in d["transactions"] if t["dispute"]]
+            if disputed:
+                t = disputed[0]
+                return (f"Your dispute on the {_rs(t['amount'])} {t['merchant']} transaction is {t['dispute']['status'].lower()} "
+                        f"(request {t['dispute']['ticket_id']}, raised {t['dispute']['raised_on']}).")
+            return f"You spent {_rs(d['purchase_total'])} across {d['purchase_count']} purchases."
+        if name == "get_card_details":
+            st = d.get("latest_statement") or {}
+            return (f"Your card ending {d['card_number_masked'][-4:]} has {_rs(d['outstanding'])} outstanding; the latest "
+                    f"bill of {_rs(st.get('total_due'))} is due {st.get('due_date')}.")
         if name == "get_loan_details":
             return f"Your EMI on {d['loan_id']} is {_rs(d['current_emi'])}, next due {d['next_due_date']}."
         return "Done."
