@@ -27,6 +27,13 @@ actions and a reusable platform for further workflows.
   policy caching. An unavailable system degrades the answer instead of failing the conversation.
 - **Packs** (`engine/packs.py`): a workflow is configuration (tool groups + domain instructions) over the
   shared engine.
+- **Voice** (`web/src/lib/speech.ts`, `web/src/components/useVoice.ts`): the same session, tools and
+  history as text; only the reply style changes. Streaming speech recognition in the browser, replies
+  spoken sentence by sentence as they stream (OpenAI `gpt-4o-mini-tts`, browser voice as fallback).
+  Talking over the assistant stops the audio and cancels the turn on the server, which keeps the
+  conversation history valid and lets in-flight confirmations finish. Lookups slower than 0.4 s get a
+  spoken filler ("Let me check your payment records"), and a second one after 2.5 s. Each voice turn logs
+  transcript time, time to first sound and time to first answer audio to `logs/voice_metrics.jsonl`.
 
 ## Quick start
 

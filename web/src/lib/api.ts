@@ -31,6 +31,45 @@ async function detail(res: Response): Promise<string> {
   }
 }
 
+export function getHealth() {
+  return request<{ status: string; business_date: string; tts: "openai" | "browser" }>("/api/health");
+}
+
+export function setChannel(sessionId: string, channel: "text" | "voice") {
+  return request<{ channel: string }>(`/api/sessions/${sessionId}/channel`, {
+    method: "POST",
+    body: JSON.stringify({ channel }),
+  });
+}
+
+/** Synthesised speech for one sentence (server TTS). Rejects so the caller can fall back to the browser voice. */
+export async function fetchSpeech(sessionId: string, text: string): Promise<Blob> {
+  const res = await fetch(`${API_URL}/api/sessions/${sessionId}/tts`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) throw new ApiError(res.status, "Speech unavailable");
+  return res.blob();
+}
+
+export type VoiceTurnMetrics = {
+  transcript_ms: number | null;
+  first_audio_ms: number | null;
+  first_answer_audio_ms: number | null;
+  first_token_ms: number | null;
+  turn_total_ms: number | null;
+  interrupted: boolean;
+  tts: string;
+};
+
+export function postVoiceMetrics(sessionId: string, m: VoiceTurnMetrics) {
+  return request<{ ok: boolean }>(`/api/sessions/${sessionId}/voice-metrics`, {
+    method: "POST",
+    body: JSON.stringify(m),
+  }).catch(() => undefined);
+}
+
 export function getDemoCustomers() {
   return request<{ customers: DemoCustomer[]; otp_hint: string }>("/api/demo-customers");
 }
@@ -54,6 +93,7 @@ export type TurnHandlers = {
   onTool: (e: { name: string; label: string }) => void;
   onToolResult: (e: { name: string; ok: boolean; error?: string | null; system?: string | null; sources: string[] }) => void;
   onAction: (e: { action_id: string; summary: string; details: Record<string, unknown> }) => void;
+  onFiller?: (text: string) => void;
   onText: (delta: string) => void;
   onDone: (e: {
     text: string;
@@ -67,15 +107,17 @@ export type TurnHandlers = {
 };
 
 /** POST a message and dispatch the server-sent events as they arrive (EventSource can't POST). */
-export async function sendMessage(sessionId: string, text: string, on: TurnHandlers): Promise<void> {
+export async function sendMessage(sessionId: string, text: string, on: TurnHandlers, signal?: AbortSignal): Promise<void> {
   let res: Response;
   try {
     res = await fetch(`${API_URL}/api/sessions/${sessionId}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ text }),
+      signal,
     });
-  } catch {
+  } catch (e) {
+    if (signal?.aborted) throw e;
     throw new ApiError(0, "Can't reach the service. Check your connection and try again.");
   }
   if (!res.ok || !res.body) throw new ApiError(res.status, await detail(res));
@@ -111,6 +153,8 @@ function dispatch(block: string, on: TurnHandlers) {
       return on.onToolResult(payload);
     case "action":
       return on.onAction(payload);
+    case "filler":
+      return on.onFiller?.(payload.text);
     case "text":
       return on.onText(payload.delta);
     case "done":

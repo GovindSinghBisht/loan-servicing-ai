@@ -52,7 +52,7 @@ export type DemoCustomer = { phone: string; name: string; story: string };
 export type Activity = {
   name: string;
   label: string;
-  status: "running" | "ok" | "error";
+  status: "running" | "ok" | "error" | "stopped";
   error?: string | null;
   system?: string | null;
 };
@@ -84,5 +84,6 @@ export type ChatMessage = {
   metrics?: TurnMetrics;
   backend?: Record<string, BackendStat>;
   streaming: boolean;
+  interrupted?: boolean;
   error?: string;
 };

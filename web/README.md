@@ -27,6 +27,10 @@ The API must be running (see the root README). Point the app at a different API 
   unavailable rather than failing.
 - **Latency details** (header toggle): time to first word, total, model vs tool time, and per-system calls
   and retries for each reply.
+- **Voice mode** (mic button): talk instead of typing in the same conversation. Replies are spoken as
+  they stream; talk at any time to interrupt; slow lookups get a short spoken filler. Needs a browser with
+  speech recognition (Chrome or Edge); use headphones so the assistant does not hear itself. The voice bar
+  shows the last turn's transcript time, time to first sound and time to the answer's audio.
 
 ## Structure
 
@@ -38,3 +42,6 @@ The API must be running (see the root README). Point the app at a different API 
 | `src/components/MessageBubble.tsx` | Reply with progress steps, sources, action card, latency |
 | `src/components/AccountPanel.tsx` | Loans, cards, open requests |
 | `src/lib/api.ts` | Typed API client and server-sent events parser |
+| `src/lib/speech.ts` | Speech recognition, sentence splitting, streamed speech output |
+| `src/components/useVoice.ts` | Voice turn logic: barge-in, echo filter, fillers, latency timeline |
+| `src/components/VoiceBar.tsx` | Voice mode controls and status |

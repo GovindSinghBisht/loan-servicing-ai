@@ -25,7 +25,7 @@ export default function MessageBubble({ message, showDetails, busy, onConfirm, o
   }
 
   const failedSystems = [...new Set(message.activities.filter((a) => a.error === "SYSTEM_UNAVAILABLE").map((a) => a.system))];
-  const thinking = message.streaming && !message.text;
+  const thinking = message.streaming && !message.text && !message.interrupted;
 
   return (
     <div className="flex gap-3">
@@ -47,9 +47,10 @@ export default function MessageBubble({ message, showDetails, busy, onConfirm, o
           </ul>
         )}
 
-        {(message.text || thinking || message.error) && (
+        {(message.text || thinking || message.error || message.interrupted) && (
           <div className="rounded-2xl rounded-tl-md border border-line bg-surface px-4 py-3 text-[15px]">
             {thinking ? <TypingDots /> : <RichText text={message.text} />}
+            {message.interrupted && <p className="mt-1 text-xs text-muted">Interrupted</p>}
             {message.error && <p className="mt-2 text-sm text-bad">{message.error}</p>}
           </div>
         )}
@@ -158,10 +159,11 @@ function Sources({ sources }: { sources: string[] }) {
   );
 }
 
-function StatusDot({ status }: { status: "running" | "ok" | "error" }) {
+function StatusDot({ status }: { status: "running" | "ok" | "error" | "stopped" }) {
   if (status === "running")
     return <span className="h-3 w-3 rounded-full border-2 border-accent border-t-transparent animate-spin" />;
-  return <span className={`h-2 w-2 rounded-full ${status === "ok" ? "bg-ok" : "bg-warn"}`} />;
+  const color = { ok: "bg-ok", error: "bg-warn", stopped: "bg-muted" }[status];
+  return <span className={`h-2 w-2 rounded-full ${color}`} />;
 }
 
 function TypingDots() {

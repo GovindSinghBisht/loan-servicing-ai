@@ -18,6 +18,8 @@ from .llm import Prompt, Provider, ToolCall, make_provider
 from .packs import CHANNEL_PROMPTS, PACKS, PLATFORM_PROMPT, Pack
 
 MAX_STEPS = 8
+WRITE_TOOLS = {"confirm_action"}  # once started, these finish even if the customer interrupts
+INTERRUPTED = {"ok": False, "error": "INTERRUPTED", "message": "The customer interrupted before this finished."}
 
 
 @dataclass
@@ -48,6 +50,7 @@ class Agent:
         self.provider = provider or make_provider(tools_for(set(self.pack.tool_groups)))
         self.history: list = []
         self.snapshot: dict | None = None
+        self._interrupted = False
 
     async def start(self) -> dict:
         """Load the customer snapshot once per session so most turns start with context already in hand."""
@@ -73,8 +76,13 @@ class Agent:
         started = time.perf_counter()
         m = TurnMetrics()
         result = TurnResult(text="", spans=spans, metrics=m)
-        self.history += self.provider.user_message(user_text)
+        note = ""
+        if self._interrupted:
+            note = "[The customer interrupted your previous reply, so they may not have heard all of it.] "
+            self._interrupted = False
+        self.history += self.provider.user_message(note + user_text)
         texts: list[str] = []
+        in_flight: list[tuple[ToolCall, asyncio.Future]] = []
 
         def stream_text(t: str) -> None:
             if m.first_text_ms is None:
@@ -83,6 +91,22 @@ class Agent:
             if on_text:
                 on_text(t)
 
+        try:
+            await self._loop(m, result, stream_text, on_tool, on_tool_result, in_flight)
+        except asyncio.CancelledError:
+            await self._repair_after_interrupt(in_flight, "".join(texts))
+            self.session.log("turn_interrupted", user=user_text, said_so_far="".join(texts))
+            raise
+
+        m.total_ms = round((time.perf_counter() - started) * 1000, 1)
+        m.llm_ms, m.tools_ms = round(m.llm_ms, 1), round(m.tools_ms, 1)
+        result.text = "".join(texts).strip()
+        self.session.log("turn", user=user_text, reply=result.text, tools=[c["name"] for c in result.tool_calls],
+                         provider=self.provider.name, model=self.provider.model, metrics=m.__dict__)
+        return result
+
+    async def _loop(self, m: TurnMetrics, result: TurnResult, stream_text, on_tool, on_tool_result,
+                    in_flight: list) -> None:
         for _ in range(MAX_STEPS):
             m.steps += 1
             llm_started = time.perf_counter()
@@ -106,7 +130,9 @@ class Agent:
                 if on_tool:
                     on_tool(c.name, c.input or {})
             tools_started = time.perf_counter()
-            outputs = await asyncio.gather(*(self._run_tool(c) for c in step.tool_calls))
+            in_flight[:] = [(c, asyncio.ensure_future(self._run_tool(c))) for c in step.tool_calls]
+            outputs = await asyncio.gather(*(asyncio.shield(t) if c.name in WRITE_TOOLS else t for c, t in in_flight))
+            in_flight.clear()
             m.tools_ms += (time.perf_counter() - tools_started) * 1000
             if on_tool_result:
                 for c, o in zip(step.tool_calls, outputs):
@@ -115,12 +141,27 @@ class Agent:
             result.tool_calls += [{"name": c.name, "input": c.input, "ok": o["ok"], "error": o.get("error"),
                                    "status": o.get("status")} for c, o in zip(step.tool_calls, outputs)]
 
-        m.total_ms = round((time.perf_counter() - started) * 1000, 1)
-        m.llm_ms, m.tools_ms = round(m.llm_ms, 1), round(m.tools_ms, 1)
-        result.text = "".join(texts).strip()
-        self.session.log("turn", user=user_text, reply=result.text, tools=[c["name"] for c in result.tool_calls],
-                         provider=self.provider.name, model=self.provider.model, metrics=m.__dict__)
-        return result
+    async def _repair_after_interrupt(self, in_flight: list[tuple[ToolCall, asyncio.Future]], said: str) -> None:
+        """Keep the history valid after a barge-in: every tool call gets a result, writes report what really happened."""
+        self._interrupted = True
+        if in_flight:
+            outputs = []
+            for call, task in in_flight:
+                if call.name in WRITE_TOOLS and not task.done():
+                    try:
+                        await asyncio.wait_for(asyncio.shield(task), timeout=10)
+                    except Exception:
+                        pass
+                if task.done() and not task.cancelled() and task.exception() is None:
+                    outputs.append(task.result())
+                else:
+                    task.cancel()
+                    outputs.append(INTERRUPTED)
+            self.history += self.provider.tool_results([c for c, _ in in_flight], outputs)
+            in_flight.clear()
+        elif said.strip():
+            # The reply was cut off mid-sentence; keep what the customer actually heard.
+            self.history.append({"role": "assistant", "content": said.strip() + " …"})
 
     async def _run_tool(self, call: ToolCall) -> dict:
         if call.input is None:
