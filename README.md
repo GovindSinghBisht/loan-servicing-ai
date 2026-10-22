@@ -4,6 +4,10 @@ A conversational assistant for a large lender's loan customers: precise, custome
 enterprise systems (CRM, loan management, payments, policy, service operations), with authorized
 actions and a reusable platform for further workflows.
 
+This repository is the backend: synthetic data, mock enterprise systems, the assistant engine and its
+API. The customer web app (text and voice) is in
+[blue-machines-fde-web](https://github.com/GovindSinghBisht/blue-machines-fde-web).
+
 ## Architecture
 
 ```
@@ -31,7 +35,7 @@ actions and a reusable platform for further workflows.
   what the customer holds, so a customer with a loan and a card talks to one assistant. The card workflow
   was one new tools file (~250 lines) and a pack entry; clients, scoping, policy lookup, confirmations,
   tickets, audit, the agent loop, web and voice were reused unchanged.
-- **Voice** (`web/src/lib/speech.ts`, `web/src/components/useVoice.ts`): the same session, tools and
+- **Voice** (server side here; browser side in the web app repo): the same session, tools and
   history as text; only the reply style changes. Streaming speech recognition in the browser, replies
   spoken sentence by sentence as they stream (OpenAI `gpt-4o-mini-tts`, browser voice as fallback).
   Talking over the assistant stops the audio and cancels the turn on the server, which keeps the
@@ -41,7 +45,7 @@ actions and a reusable platform for further workflows.
 
 ## Quick start
 
-Requires Python 3.10+ with [uv](https://docs.astral.sh/uv/), and Node.js 20+.
+Requires Python 3.10+ with [uv](https://docs.astral.sh/uv/). The web app additionally needs Node.js 20+.
 
 ```bash
 uv sync
@@ -49,15 +53,16 @@ cp .env.example .env                      # add OPENAI_API_KEY
 uv run python -m datagen.generate         # synthetic data (deterministic)
 ```
 
-Then, in three terminals:
+Then, in two terminals:
 
 ```bash
 uv run python -m mock_systems.run                 # 1: six mock systems on ports 8101-8106
 uv run uvicorn engine.server:app --port 8000      # 2: assistant API
-cd web && npm install && npm run dev              # 3: web app on http://localhost:3000
 ```
 
-Sign in with a demo customer (OTP `123456`). A terminal client is also available:
+Then run the [web app](https://github.com/GovindSinghBisht/blue-machines-fde-web) (`npm install && npm run dev`,
+http://localhost:3000) and sign in with a demo customer (OTP `123456`). The API allows the web app's
+origin via `WEB_ORIGINS` (default `http://localhost:3000`). A terminal client is also available:
 `uv run python -m engine.cli --phone +919800000001`.
 
 To work on the UI without an LLM key, run `uv run python -m tests.offline_server` instead of terminal 2:
@@ -86,7 +91,6 @@ curl -X PUT localhost:8103/admin/chaos -H 'content-type: application/json' -d '{
 | `datagen/` | Synthetic data generator, demo personas, validator. |
 | `mock_systems/` | One FastAPI app per enterprise system, with fault injection and idempotent writes. |
 | `engine/` | Resilient clients, tool registry and confirmation gate, tool packs, agent loop, LLM providers, web API (`server.py`), terminal client. |
-| `web/` | Customer web app (Next.js, React, Tailwind): chat with live progress, sources, confirmations, account panel. |
 | `evals/` | Graded conversations and the latency/accuracy runner. |
 | `tests/` | Unit and integration tests (in-process systems, scripted model). |
 
