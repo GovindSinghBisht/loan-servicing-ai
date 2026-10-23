@@ -156,6 +156,8 @@ class Store:
                     for op, target, payload in batch:
                         if op == "insert":
                             await conn.execute(insert(TABLES[target]), [payload])
+                        elif op == "retention":
+                            await self._retain(conn, target)
                         else:
                             await conn.execute(update(conversations)
                                                .where(conversations.c.conversation_id == target).values(**payload))
@@ -168,25 +170,28 @@ class Store:
     # ---- conversations ------------------------------------------------------------------------------------
 
     async def start_conversation(self, conversation_id: str, customer_id: str, channel: str, packs: list[str],
-                                 provider: str, model: str) -> int:
-        """Create the conversation row (synchronously, so later queued rows can reference it), then apply retention."""
+                                 provider: str, model: str) -> None:
+        """Queue the conversation row and a retention pass. The queue is FIFO, so the row lands before any of its
+        messages; nothing here waits on the database, keeping sign-in fast even against a distant database."""
         ts = now()
-        async with self.engine.begin() as conn:
-            await conn.execute(insert(conversations).values(
-                conversation_id=conversation_id, customer_id=customer_id, channel=channel, packs=packs,
-                provider=provider, model=model, turns=0, started_at=ts, last_active_at=ts))
-        return await self.apply_retention(customer_id)
+        self._queue.put_nowait(("insert", "conversations", dict(
+            conversation_id=conversation_id, customer_id=customer_id, channel=channel, packs=packs,
+            provider=provider, model=model, turns=0, started_at=ts, last_active_at=ts)))
+        self._queue.put_nowait(("retention", customer_id, None))
 
     async def apply_retention(self, customer_id: str) -> int:
-        keep = policy()["retention"]["conversations_per_customer"]
         await self.flush()
         async with self.engine.begin() as conn:
-            rows = (await conn.execute(
-                select(conversations.c.conversation_id).where(conversations.c.customer_id == customer_id)
-                .order_by(conversations.c.last_active_at.desc(), conversations.c.started_at.desc()).offset(keep)
-            )).scalars().all()
-            if rows:
-                await conn.execute(delete(conversations).where(conversations.c.conversation_id.in_(rows)))
+            return await self._retain(conn, customer_id)
+
+    async def _retain(self, conn, customer_id: str) -> int:
+        keep = policy()["retention"]["conversations_per_customer"]
+        rows = (await conn.execute(
+            select(conversations.c.conversation_id).where(conversations.c.customer_id == customer_id)
+            .order_by(conversations.c.last_active_at.desc(), conversations.c.started_at.desc()).offset(keep)
+        )).scalars().all()
+        if rows:
+            await conn.execute(delete(conversations).where(conversations.c.conversation_id.in_(rows)))
         return len(rows)
 
     async def recent_conversations(self, customer_id: str) -> list[dict]:

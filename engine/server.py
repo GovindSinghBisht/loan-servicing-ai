@@ -185,11 +185,11 @@ async def login(body: Login):
     agent = Agent(session, pack=packs, provider=provider)
     check_model(agent.provider.model)  # governance: only approved models serve customers
     snapshot = await agent.start(overview)
-    removed = await store.start_conversation(session.session_id, session.customer_id, body.channel, packs,
-                                             agent.provider.name, agent.provider.model)
+    await store.start_conversation(session.session_id, session.customer_id, body.channel, packs,
+                                   agent.provider.name, agent.provider.model)
     sid = secrets.token_urlsafe(24)
     state["sessions"][sid] = Live(agent)
-    session.log("login", channel=body.channel, packs=packs, retention_removed=removed)
+    session.log("login", channel=body.channel, packs=packs)
     return {"session_id": sid, "customer": snapshot.get("customer"), "account": snapshot, "packs": packs}
 
 
