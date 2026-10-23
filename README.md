@@ -92,8 +92,11 @@ server's admin credentials in `.env` (`DB_HOST`, `DB_ADMIN_USER`, `DB_ADMIN_PASS
 uv run python -m engine.db_setup
 ```
 
-It creates a `loan_servicing` database owned by a least-privilege `loan_app` user, writes `DATABASE_URL`
-for that user into `.env` and creates the tables. Remove the admin password from `.env` afterwards.
+It creates the `blue_machines` database and its tables as the admin, then a least-privilege
+`blue_machines_app` user with only the table rights the code needs: read/write on conversations,
+retention deletes, and **append-only** access to audit and guardrail events, so even a compromised app
+cannot rewrite the audit trail. No CREATE / DROP / ALTER, and other roles cannot connect to the
+database. It writes `DATABASE_URL` for the app user into `.env`; remove the admin password afterwards.
 `/api/health` reports the active storage backend and whether tracing is on.
 
 Tests and evaluation:
