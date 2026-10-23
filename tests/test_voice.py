@@ -8,7 +8,7 @@ import mock_systems.loans
 from engine import server
 from engine.agent import Agent
 from engine.llm import Step, ToolCall
-from tests.test_server import api, events, login  # noqa: F401  (fixture + helpers)
+from tests.test_server import H, api, events, login  # noqa: F401  (fixture + helpers)
 
 
 @contextmanager
@@ -98,13 +98,13 @@ async def test_barge_in_during_confirmation_still_completes_the_write(session):
 
 
 async def test_voice_session_gets_fillers_before_the_answer(api):  # noqa: F811
-    sid = (await login(api))["session_id"]
-    assert (await api.post(f"/api/sessions/{sid}/channel", json={"channel": "voice"})).json() == {"channel": "voice"}
+    sid = (await login(api))["token"]
+    assert (await api.post("/api/channel", headers=H(sid), json={"channel": "voice"})).json() == {"channel": "voice"}
     saved = server.FILLER_AFTER_S, server.SLOW_FILLER_AFTER_S
     server.FILLER_AFTER_S, server.SLOW_FILLER_AFTER_S = 0.05, 0.15
     try:
         with slow(mock_systems.loans.app, 300):
-            ev = events((await api.post(f"/api/sessions/{sid}/messages", json={"text": "Why did my EMI increase?"})).text)
+            ev = events((await api.post("/api/messages", headers=H(sid), json={"text": "Why did my EMI increase?"})).text)
     finally:
         server.FILLER_AFTER_S, server.SLOW_FILLER_AFTER_S = saved
     kinds = [e for e, _ in ev]
@@ -114,24 +114,24 @@ async def test_voice_session_gets_fillers_before_the_answer(api):  # noqa: F811
 
 
 async def test_quick_lookup_gets_no_filler(api):  # noqa: F811
-    sid = (await login(api))["session_id"]
-    await api.post(f"/api/sessions/{sid}/channel", json={"channel": "voice"})
-    ev = events((await api.post(f"/api/sessions/{sid}/messages", json={"text": "Why did my EMI increase?"})).text)
+    sid = (await login(api))["token"]
+    await api.post("/api/channel", headers=H(sid), json={"channel": "voice"})
+    ev = events((await api.post("/api/messages", headers=H(sid), json={"text": "Why did my EMI increase?"})).text)
     assert "filler" not in [e for e, _ in ev], "the answer beat the filler delay, so nothing should be said first"
 
 
 async def test_text_session_gets_no_fillers(api):  # noqa: F811
-    sid = (await login(api))["session_id"]
-    ev = events((await api.post(f"/api/sessions/{sid}/messages", json={"text": "Why did my EMI increase?"})).text)
+    sid = (await login(api))["token"]
+    ev = events((await api.post("/api/messages", headers=H(sid), json={"text": "Why did my EMI increase?"})).text)
     assert "filler" not in [e for e, _ in ev]
 
 
 async def test_tts_falls_back_without_key_and_metrics_are_stored(api, monkeypatch):  # noqa: F811
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    sid = (await login(api))["session_id"]
+    sid = (await login(api))["token"]
     assert (await api.get("/api/health")).json()["tts"] == "browser"
-    assert (await api.post(f"/api/sessions/{sid}/tts", json={"text": "Hello"})).status_code == 503
-    r = await api.post(f"/api/sessions/{sid}/voice-metrics", json={"transcript_ms": 120, "first_audio_ms": 640})
+    assert (await api.post("/api/tts", headers=H(sid), json={"text": "Hello"})).status_code == 503
+    r = await api.post("/api/voice-metrics", headers=H(sid), json={"transcript_ms": 120, "first_audio_ms": 640})
     assert r.json() == {"ok": True}
     assert await server.state["store"].count("voice_metrics") == 1
-    assert (await api.post("/api/sessions/nope/tts", json={"text": "Hi"})).status_code == 404
+    assert (await api.post("/api/tts", headers=H("nope"), json={"text": "Hi"})).status_code == 401

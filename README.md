@@ -27,6 +27,11 @@ API. The customer web app (text and voice) is in
 - **Security**: the verified customer id is injected server-side, never supplied by the model; ownership
   is checked on every id; actions return a proposal and only execute after the customer confirms in a
   later turn; every tool call, action and guardrail decision is recorded in the database.
+- **Login sessions** (`engine/server.py`): sign-in returns a random bearer token that the server stores only
+  as a SHA-256 hash, with idle (30 min) and absolute (8 h) expiry from the governance policy. It travels
+  in the `Authorization` header, never in URLs, so it cannot leak into access logs. A refresh or an API
+  restart does not sign the customer out: a valid session is restored from the database with its
+  conversation. Sign-out revokes the session immediately; revoked sessions are kept for audit.
 - **Resilience** (`engine/clients.py`): per-system timeouts, retries with backoff, circuit breaker,
   policy caching. An unavailable system degrades the answer instead of failing the conversation.
 - **Packs** (`engine/packs.py`): a workflow is configuration (tool groups + domain instructions) over the

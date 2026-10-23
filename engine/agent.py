@@ -10,6 +10,7 @@ import asyncio
 import json
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from typing import Callable
 
 from .clients import Span, start_trace
@@ -55,6 +56,8 @@ class Agent:
         self.snapshot: dict | None = None
         self._interrupted = False
         self.grounding = Grounding()  # evidence a reply may cite: snapshot + every tool result this conversation
+        self.transcript: list[dict] = []  # customer-visible messages, mirrors what is stored (serves the UI fast)
+        self.started_at = datetime.now(timezone.utc)
 
     async def start(self, overview: dict | None = None) -> dict:
         """Load the customer snapshot once per session so most turns start with context already in hand.
@@ -65,6 +68,17 @@ class Agent:
         self.snapshot = overview.get("data") or {"unavailable": overview.get("message")}
         self.grounding.add(self.snapshot)
         return self.snapshot
+
+    def restore(self, messages: list[dict]) -> None:
+        """Rebuild the conversation from stored messages (after a restart). Text only: tool results and
+        pending actions are not replayed, so the model refreshes facts with tools as needed."""
+        for m in messages:
+            if m["role"] == "user":
+                self.history += self.provider.user_message(m["content"])
+            else:
+                self.history.append({"role": "assistant", "content": m["content"] or "…"})
+        self.transcript = [dict(m) for m in messages]
+        self.session.turn = max((m["turn"] for m in messages), default=0)
 
     def _prompt(self) -> Prompt:
         return Prompt(
@@ -102,6 +116,7 @@ class Agent:
                          user_text=decision.text) as root:
             s.store.record("messages", conversation_id=s.session_id, turn=s.turn, role="user", content=decision.text,
                            channel=s.channel, guardrails=[e.rule for e in decision.events] or None)
+            self.transcript.append(self._entry("user", decision.text))
             if decision.blocked_reply:
                 stream_text(decision.blocked_reply)  # the model never sees a message carrying a secret
             else:
@@ -133,8 +148,21 @@ class Agent:
               model=self.provider.model, metrics=asdict(m), guardrails=[e.rule for e in s.turn_guardrails])
         return result
 
+    def _entry(self, role: str, content: str, interrupted: bool = False, tools: list[str] | None = None) -> dict:
+        return {"turn": self.session.turn, "role": role, "content": content, "channel": self.session.channel,
+                "interrupted": interrupted, "tools": tools or [], "created_at": datetime.now(timezone.utc).isoformat()}
+
+    def summary(self) -> dict:
+        """The current conversation as the history list shows it, built from memory."""
+        first = next((m["content"] for m in self.transcript if m["role"] == "user"), None)
+        last = self.transcript[-1]["created_at"] if self.transcript else self.started_at.isoformat()
+        return {"conversation_id": self.session.session_id, "title": first, "channel": self.session.channel,
+                "turns": self.session.turn, "started_at": self.started_at.isoformat(), "last_active_at": last,
+                "current": True}
+
     def _save_turn(self, result: TurnResult, reply: str, interrupted: bool, title: str) -> None:
         s, m = self.session, result.metrics
+        self.transcript.append(self._entry("assistant", reply, interrupted, [c["name"] for c in result.tool_calls]))
         s.store.record("messages", conversation_id=s.session_id, turn=s.turn, role="assistant", content=reply,
                        channel=s.channel, interrupted=interrupted,
                        guardrails=[e.rule for e in s.turn_guardrails if e.stage == "output"] or None)

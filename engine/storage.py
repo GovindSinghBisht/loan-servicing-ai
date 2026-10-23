@@ -84,6 +84,20 @@ guardrail_events = Table(
     Column("detail", JSON),
     Column("created_at", DateTime(timezone=True), nullable=False),
 )
+# Login sessions. Only a SHA-256 hash of the bearer token is stored; revoked rows are kept for audit.
+auth_sessions = Table(
+    "auth_sessions", metadata,
+    Column("token_hash", String(64), primary_key=True),
+    Column("customer_id", String(32), nullable=False, index=True),
+    Column("conversation_id", String(32), nullable=False),
+    Column("channel", String(16)),
+    Column("user_agent", String(200)),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("last_seen_at", DateTime(timezone=True), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("revoked_at", DateTime(timezone=True)),
+    Column("revoked_reason", String(32)),
+)
 voice_metrics = Table(
     "voice_metrics", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
@@ -104,7 +118,9 @@ class Store:
     def __init__(self, url: str | None = None):
         self.url = url or os.environ.get("DATABASE_URL") or f"sqlite+aiosqlite:///{DEFAULT_SQLITE}"
         self.is_sqlite = self.url.startswith("sqlite")
-        kwargs = {} if self.is_sqlite else {"pool_size": 5, "max_overflow": 10, "pool_pre_ping": True}
+        # No pre-ping: it costs a round trip per query, which matters when the database is far away.
+        # Connections are recycled periodically instead, and a failed write is logged, never fatal.
+        kwargs = {} if self.is_sqlite else {"pool_size": 5, "max_overflow": 10, "pool_recycle": 1800}
         self.engine: AsyncEngine = create_async_engine(self.url, **kwargs)
         if self.is_sqlite:
             @event.listens_for(self.engine.sync_engine, "connect")
@@ -158,6 +174,9 @@ class Store:
                             await conn.execute(insert(TABLES[target]), [payload])
                         elif op == "retention":
                             await self._retain(conn, target)
+                        elif op == "auth_touch":
+                            await conn.execute(update(auth_sessions)
+                                               .where(auth_sessions.c.token_hash == target).values(**payload))
                         else:
                             await conn.execute(update(conversations)
                                                .where(conversations.c.conversation_id == target).values(**payload))
@@ -227,6 +246,30 @@ class Store:
                           "interrupted": m["interrupted"], "created_at": m["created_at"].isoformat(),
                           "tools": by_turn.get(m["turn"], []) if m["role"] == "assistant" else []} for m in msgs],
         }
+
+    # ---- login sessions (security-critical: written synchronously, not via the queue) --------------------
+
+    async def create_auth_session(self, token_hash: str, customer_id: str, conversation_id: str, channel: str,
+                                  user_agent: str | None, expires_at: datetime) -> None:
+        ts = now()
+        async with self.engine.begin() as conn:
+            await conn.execute(insert(auth_sessions).values(
+                token_hash=token_hash, customer_id=customer_id, conversation_id=conversation_id, channel=channel,
+                user_agent=(user_agent or "")[:200], created_at=ts, last_seen_at=ts, expires_at=expires_at))
+
+    async def get_auth_session(self, token_hash: str) -> dict | None:
+        async with self.engine.connect() as conn:
+            row = (await conn.execute(select(auth_sessions).where(auth_sessions.c.token_hash == token_hash))).mappings().first()
+        return dict(row) if row else None
+
+    def touch_auth_session(self, token_hash: str, channel: str) -> None:
+        self._queue.put_nowait(("auth_touch", token_hash, {"last_seen_at": now(), "channel": channel}))
+
+    async def revoke_auth_session(self, token_hash: str, reason: str) -> None:
+        async with self.engine.begin() as conn:
+            await conn.execute(update(auth_sessions).where(auth_sessions.c.token_hash == token_hash,
+                                                           auth_sessions.c.revoked_at.is_(None))
+                               .values(revoked_at=now(), revoked_reason=reason))
 
     async def count(self, table: str, **where) -> int:
         await self.flush()

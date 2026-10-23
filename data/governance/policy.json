@@ -1,6 +1,11 @@
 {
   "version": "2026-10-23",
   "description": "Runtime governance for the assistant. Reviewed by risk/compliance; changes take effect on restart without code changes.",
+  "sessions": {
+    "idle_minutes": 30,
+    "absolute_hours": 8,
+    "note": "Login sessions expire after this much inactivity or total time. Tokens are stored only as SHA-256 hashes."
+  },
   "retention": {
     "conversations_per_customer": 5,
     "note": "Older conversations (messages, tool calls, metrics) are deleted. Audit and guardrail events are retained separately."
@@ -8,7 +13,11 @@
   "input": {
     "max_chars": 2000,
     "block_secrets": true,
-    "redact": ["card_number", "aadhaar", "pan"],
+    "redact": [
+      "card_number",
+      "aadhaar",
+      "pan"
+    ],
     "prompt_injection": "flag"
   },
   "output": {
@@ -20,14 +29,26 @@
     "disabled_tools": [],
     "disallowed_on_voice": [],
     "limits": {
-      "request_prepayment": { "field": "amount", "max": 1000000, "reason": "Prepayments above Rs 10 lakh are handled by a relationship manager." }
+      "request_prepayment": {
+        "field": "amount",
+        "max": 1000000,
+        "reason": "Prepayments above Rs 10 lakh are handled by a relationship manager."
+      }
     }
   },
   "channels": {
     "voice_requires_consent": "voice_recording"
   },
   "models": {
-    "allowed": ["gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "keyword-router", "test-model", "test"]
+    "allowed": [
+      "gpt-4.1",
+      "gpt-4.1-mini",
+      "gpt-4o",
+      "gpt-4o-mini",
+      "keyword-router",
+      "test-model",
+      "test"
+    ]
   },
   "observability": {
     "mask_pii_in_traces": true

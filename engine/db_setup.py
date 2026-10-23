@@ -41,6 +41,7 @@ GRANTS = {
     "audit_events": "SELECT, INSERT",       # append-only
     "guardrail_events": "SELECT, INSERT",   # append-only
     "voice_metrics": "SELECT, INSERT",
+    "auth_sessions": "SELECT, INSERT, UPDATE",  # revoke = update; rows are kept for audit
 }
 
 
@@ -85,9 +86,11 @@ async def main() -> None:
         else:
             print(f"  database {db}: exists")
         exists = await conn.fetchval("select 1 from pg_roles where rolname = $1", app_user)
-        verb = "alter" if exists else "create"
-        await conn.execute(f'{verb} role "{app_user}" with login nosuperuser nocreatedb nocreaterole noinherit '
-                           f'password $${app_pw}$$')
+        if exists:  # RDS masters are not superusers: on an existing role only the password can be changed
+            await conn.execute(f'alter role "{app_user}" with login password $${app_pw}$$')
+        else:
+            await conn.execute(f'create role "{app_user}" with login nosuperuser nocreatedb nocreaterole noinherit '
+                               f'password $${app_pw}$$')
         print(f"  role {app_user}: {'exists, password rotated' if exists else 'created'}")
         await conn.execute(f'revoke connect on database "{db}" from public')
         await conn.execute(f'grant connect on database "{db}" to "{app_user}"')
