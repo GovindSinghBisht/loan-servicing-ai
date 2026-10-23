@@ -6,7 +6,9 @@ Security model:
   loan/card/ticket id the LLM passes and answer NOT_FOUND (not FORBIDDEN) to avoid leaking existence.
 - Action tools never execute directly. They return a Proposal; the engine parks it and the LLM must
   call confirm_action in a *later* turn, after the customer has replied. The LLM cannot self-confirm.
-- Every tool call and executed action is written to an audit log.
+- Before any action is proposed, governance policy is checked in code (kill switches, channel rules,
+  per-session limits, amount caps); the model cannot talk its way past it.
+- Every tool call, executed action and guardrail decision is recorded (database audit tables) and traced.
 """
 from __future__ import annotations
 
@@ -14,14 +16,14 @@ import json
 import time
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
 from pydantic import BaseModel, ValidationError
 
 from .clients import NotFound, Systems, SystemUnavailable
-
-AUDIT_LOG = Path(__file__).resolve().parent.parent / "logs" / "audit.jsonl"
+from .governance import GuardrailEvent, PolicyViolation, check_action
+from .observability import tracer
+from .storage import NullStore
 
 
 class ToolError(Exception):
@@ -93,17 +95,30 @@ class Session:
     turn: int = 0
     pending: dict[str, PendingAction] = field(default_factory=dict)
     audit: list[dict] = field(default_factory=list)
+    store: Any = field(default_factory=NullStore)
+    executed_actions: int = 0
+    turn_guardrails: list[GuardrailEvent] = field(default_factory=list)
 
     def begin_turn(self) -> None:
         self.turn += 1
+        self.turn_guardrails = []
 
     def log(self, event: str, **data) -> None:
         entry = {"ts": time.time(), "session_id": self.session_id, "customer_id": self.customer_id,
                  "turn": self.turn, "event": event, **data}
         self.audit.append(entry)
-        AUDIT_LOG.parent.mkdir(exist_ok=True)
-        with AUDIT_LOG.open("a") as f:
-            f.write(json.dumps(entry, default=str) + "\n")
+        self.store.record("audit_events", conversation_id=self.session_id, customer_id=self.customer_id,
+                          turn=self.turn, event=event, data=jsonable(data))
+
+    def guardrail(self, e: GuardrailEvent) -> None:
+        """Record a guardrail decision for audit, the current turn's result and the trace."""
+        self.turn_guardrails.append(e)
+        self.store.record("guardrail_events", conversation_id=self.session_id, customer_id=self.customer_id,
+                          turn=self.turn, stage=e.stage, rule=e.rule, severity=e.severity, detail=jsonable(e.detail))
+        with tracer.observe(f"guardrail:{e.rule}", as_type="guardrail", input={"stage": e.stage},
+                            output={"severity": e.severity, **e.detail},
+                            level="WARNING" if e.severity != "info" else "DEFAULT"):
+            pass
 
 
 async def execute(session: Session, name: str, raw_args: dict) -> dict:
@@ -114,7 +129,11 @@ async def execute(session: Session, name: str, raw_args: dict) -> dict:
         if spec is None:
             raise ToolError("UNKNOWN_TOOL", f"No tool named {name}")
         args = spec.input_model.model_validate(raw_args or {})
-        out = await spec.handler(session, args)
+        if spec.kind == "action":
+            check_action(name, args.model_dump(), session.channel, session.executed_actions)
+        with tracer.observe(name, as_type="tool", input=raw_args) as span:
+            out = await spec.handler(session, args)
+            span.update(output=out.summary if isinstance(out, Proposal) else out.data)
         if isinstance(out, Proposal):
             action_id = f"ACT-{uuid.uuid4().hex[:8]}"
             session.pending[action_id] = PendingAction(action_id, name, out, session.turn)
@@ -126,6 +145,9 @@ async def execute(session: Session, name: str, raw_args: dict) -> dict:
             result = {"ok": True, "data": out.data, "sources": out.sources}
     except ValidationError as e:
         result = {"ok": False, "error": "INVALID_ARGUMENTS", "message": str(e.errors()[:3])}
+    except PolicyViolation as e:
+        session.guardrail(e.event)
+        result = {"ok": False, "error": "POLICY_BLOCKED", "rule": e.event.rule, "message": e.message}
     except ToolError as e:
         result = {"ok": False, "error": e.code, "message": e.message, **e.details}
     except NotFound as e:

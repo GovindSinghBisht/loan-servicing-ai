@@ -20,6 +20,7 @@ from .agent import Agent  # noqa: E402
 from .clients import NotFound, Systems  # noqa: E402
 from .core import Session, execute  # noqa: E402
 from .packs import packs_for  # noqa: E402
+from .storage import Store  # noqa: E402
 import engine.tools  # noqa: E402,F401
 
 DIM, CYAN, RESET = "\033[2m", "\033[36m", "\033[0m"
@@ -47,10 +48,14 @@ async def main() -> None:
         sys.exit(f"No customer with phone {args.phone}")
     print(f"{DIM}OTP verified (demo) · {customer['first_name']} {customer['last_name']} · {customer['customer_id']}{RESET}")
 
-    session = Session(customer_id=customer["customer_id"], systems=systems)
+    store = Store()
+    await store.init()
+    session = Session(customer_id=customer["customer_id"], systems=systems, store=store)
     overview = await execute(session, "get_customer_overview", {})
     agent = Agent(session, args.pack.split(",") if args.pack else packs_for(overview.get("data") or {}))
     await agent.start(overview)
+    await store.start_conversation(session.session_id, session.customer_id, "text", sorted(agent.pack.tool_groups),
+                                   agent.provider.name, agent.provider.model)
     print("Type a question, or 'quit'.\n")
     try:
         while True:
@@ -70,6 +75,7 @@ async def main() -> None:
             )
             print("\n" + latency_line(r) + "\n")
     finally:
+        await store.close()
         await systems.close()
 
 

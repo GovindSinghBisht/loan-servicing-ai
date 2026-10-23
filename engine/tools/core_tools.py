@@ -105,6 +105,7 @@ async def confirm_action(s: Session, a: ActionRef) -> ToolResult:
                                                  "confirm first; only their next message can confirm it.")
     out = await pending.proposal.run()
     del s.pending[a.action_id]
+    s.executed_actions += 1
     s.log("action_executed", action_id=a.action_id, tool=pending.tool, proposed_in_turn=pending.proposed_in_turn,
           details=pending.proposal.details, result=out.data)
     return out

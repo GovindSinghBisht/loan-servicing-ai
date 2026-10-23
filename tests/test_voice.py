@@ -1,6 +1,5 @@
 """Voice behaviour: barge-in cancels a turn without corrupting history, writes finish, fillers cover slow lookups."""
 import asyncio
-import json
 from contextlib import contextmanager
 
 import mock_systems.payments
@@ -127,14 +126,12 @@ async def test_text_session_gets_no_fillers(api):  # noqa: F811
     assert "filler" not in [e for e, _ in ev]
 
 
-async def test_tts_falls_back_without_key_and_metrics_are_logged(api, monkeypatch, tmp_path):  # noqa: F811
+async def test_tts_falls_back_without_key_and_metrics_are_stored(api, monkeypatch):  # noqa: F811
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setattr(server, "VOICE_LOG", tmp_path / "voice.jsonl")
     sid = (await login(api))["session_id"]
     assert (await api.get("/api/health")).json()["tts"] == "browser"
     assert (await api.post(f"/api/sessions/{sid}/tts", json={"text": "Hello"})).status_code == 503
     r = await api.post(f"/api/sessions/{sid}/voice-metrics", json={"transcript_ms": 120, "first_audio_ms": 640})
     assert r.json() == {"ok": True}
-    logged = json.loads((tmp_path / "voice.jsonl").read_text())
-    assert logged["first_audio_ms"] == 640
+    assert await server.state["store"].count("voice_metrics") == 1
     assert (await api.post("/api/sessions/nope/tts", json={"text": "Hi"})).status_code == 404

@@ -26,7 +26,7 @@ API. The customer web app (text and voice) is in
   result carries the rule checks and source records behind it, so answers are verifiable.
 - **Security**: the verified customer id is injected server-side, never supplied by the model; ownership
   is checked on every id; actions return a proposal and only execute after the customer confirms in a
-  later turn; every tool call and action is audit-logged (`logs/audit.jsonl`).
+  later turn; every tool call, action and guardrail decision is recorded in the database.
 - **Resilience** (`engine/clients.py`): per-system timeouts, retries with backoff, circuit breaker,
   policy caching. An unavailable system degrades the answer instead of failing the conversation.
 - **Packs** (`engine/packs.py`): a workflow is configuration (tool groups + domain instructions) over the
@@ -41,7 +41,24 @@ API. The customer web app (text and voice) is in
   Talking over the assistant stops the audio and cancels the turn on the server, which keeps the
   conversation history valid and lets in-flight confirmations finish. Lookups slower than 0.4 s get a
   spoken filler ("Let me check your payment records"), and a second one after 2.5 s. Each voice turn logs
-  transcript time, time to first sound and time to first answer audio to `logs/voice_metrics.jsonl`.
+  transcript time, time to first sound and time to first answer audio.
+- **Guardrails and governance** (`engine/governance.py`, rules in `data/governance/policy.json`):
+  - *Input*: OTP / PIN / CVV / password messages are blocked before the model sees them; card numbers,
+    Aadhaar and PAN are redacted; prompt-injection attempts are flagged.
+  - *Output*: a grounding check verifies that every amount, percentage and account id in a reply appears in
+    data the tools returned; anything else is flagged and shown to the customer as unverified.
+  - *Actions*: kill switches, channel restrictions, a per-session action cap and amount limits (e.g.
+    prepayments above Rs 10 lakh go to a relationship manager) are enforced in code before a proposal.
+  - *Channels and models*: voice requires the customer's call-recording consent; only allow-listed models
+    can serve customers. Risk teams change the policy file, not code.
+- **Storage** (`engine/storage.py`): conversations, messages, tool calls, per-turn latency, audit and
+  guardrail events in PostgreSQL (SQLite when `DATABASE_URL` is unset). Writes go through a background
+  queue so the database never adds reply latency. Each customer keeps their **last 5 conversations**
+  (retention policy) and can reopen them in the web app; audit and guardrail events are retained
+  separately. Secrets are redacted before anything is stored.
+- **Observability** (`engine/observability.py`): Langfuse traces per turn, grouped by session and
+  customer: model calls with token usage, every tool call, guardrail decisions. PII is masked before data
+  leaves the service. Enabled by setting `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`.
 
 ## Quick start
 
@@ -68,12 +85,23 @@ origin via `WEB_ORIGINS` (default `http://localhost:3000`). A terminal client is
 To work on the UI without an LLM key, run `uv run python -m tests.offline_server` instead of terminal 2:
 a keyword-routed stand-in that calls the real tools.
 
+Database: without configuration a local SQLite file (`data/local.db`) is used. For PostgreSQL, put the
+server's admin credentials in `.env` (`DB_HOST`, `DB_ADMIN_USER`, `DB_ADMIN_PASSWORD`) and run once:
+
+```bash
+uv run python -m engine.db_setup
+```
+
+It creates a `loan_servicing` database owned by a least-privilege `loan_app` user, writes `DATABASE_URL`
+for that user into `.env` and creates the tables. Remove the admin password from `.env` afterwards.
+`/api/health` reports the active storage backend and whether tracing is on.
+
 Tests and evaluation:
 
 ```bash
-uv run pytest -q                          # math, data, tools, agent loop (no API key needed)
+uv run pytest -q                          # math, data, tools, agent, API, voice, storage, guardrails (no key needed)
 uv run python -m datagen.validate         # data integrity + persona stories
-uv run python -m evals.run                # 16 graded conversations against the real model + latency report
+uv run python -m evals.run                # 19 graded conversations against the real model + latency report
 ```
 
 Change a system's behaviour live (e.g. make payments slow and flaky for a demo):
@@ -90,7 +118,8 @@ curl -X PUT localhost:8103/admin/chaos -H 'content-type: application/json' -d '{
 | `data/policies/` | Versioned policy clauses with machine-readable `params` (one superseded version on purpose). |
 | `datagen/` | Synthetic data generator, demo personas, validator. |
 | `mock_systems/` | One FastAPI app per enterprise system, with fault injection and idempotent writes. |
-| `engine/` | Resilient clients, tool registry and confirmation gate, tool packs, agent loop, LLM providers, web API (`server.py`), terminal client. |
+| `engine/` | Resilient clients, tool registry and confirmation gate, tool packs, agent loop, LLM providers, guardrails and governance, storage, tracing, web API (`server.py`), terminal client, database setup. |
+| `data/governance/policy.json` | Governance policy: retention, PII handling, action limits and kill switches, voice consent, model allow-list. |
 | `evals/` | Graded conversations and the latency/accuracy runner. |
 | `tests/` | Unit and integration tests (in-process systems, scripted model). |
 

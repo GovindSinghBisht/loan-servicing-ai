@@ -13,8 +13,9 @@ are being checked) and the reply token by token instead of a spinner:
     done         {text, metrics, sources, backend}   turn complete
     error        {message}
 
-Sessions live in memory with an idle timeout; in production they would move to Redis so any API
-instance can serve any conversation.
+Live sessions (the agent and its pending actions) are held in memory with an idle timeout; every
+message, tool call, metric, audit and guardrail event is persisted to the database (PostgreSQL via
+DATABASE_URL, SQLite otherwise), and customers can browse their recent conversations.
 """
 from __future__ import annotations
 
@@ -24,7 +25,6 @@ import os
 import secrets
 import time
 from contextlib import asynccontextmanager
-from pathlib import Path
 from dataclasses import asdict
 from typing import Literal
 
@@ -40,7 +40,10 @@ from pydantic import BaseModel  # noqa: E402
 from .agent import Agent  # noqa: E402
 from .clients import NotFound, Systems  # noqa: E402
 from .core import Session, execute  # noqa: E402
+from .governance import GuardrailEvent, check_model, policy  # noqa: E402
+from .observability import tracer  # noqa: E402
 from .packs import packs_for  # noqa: E402
+from .storage import Store  # noqa: E402
 from .llm import Provider  # noqa: E402
 import engine.tools  # noqa: E402,F401
 
@@ -97,18 +100,21 @@ TTS_MODEL = os.environ.get("TTS_MODEL", "gpt-4o-mini-tts")
 TTS_VOICE = os.environ.get("TTS_VOICE", "coral")
 TTS_STYLE = ("Speak warmly and clearly, like a helpful customer service agent at an Indian bank. "
              "Natural, moderate pace. Read amounts in rupees naturally.")
-VOICE_LOG = Path(__file__).resolve().parent.parent / "logs" / "voice_metrics.jsonl"
-
 state: dict = {}
 systems_factory = Systems  # tests swap in in-process systems
+store_factory = Store      # tests swap in a temporary database
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     state["systems"] = systems_factory()
+    state["store"] = store_factory()
+    await state["store"].init()
     state["sessions"] = {}
     yield
+    await state["store"].close()
     await state["systems"].close()
+    tracer.flush()
 
 
 app = FastAPI(title="Loan servicing assistant API", lifespan=lifespan)
@@ -147,7 +153,8 @@ def tts_backend() -> str:
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "business_date": await state["systems"].business_date(), "tts": tts_backend()}
+    return {"status": "ok", "business_date": await state["systems"].business_date(), "tts": tts_backend(),
+            "storage": state["store"].backend, "tracing": "langfuse" if tracer.enabled else "off"}
 
 
 @app.get("/api/demo-customers")
@@ -170,16 +177,38 @@ async def login(body: Login):
         customer = await systems.crm.get("/customers/lookup", phone=body.phone)
     except NotFound:
         raise HTTPException(404, "No customer is registered with this mobile number.")
-    session = Session(customer_id=customer["customer_id"], systems=systems, channel=body.channel)
+    store: Store = state["store"]
+    session = Session(customer_id=customer["customer_id"], systems=systems, channel=body.channel, store=store)
     overview = await execute(session, "get_customer_overview", {})
     packs = packs_for(overview.get("data") or {})
     provider: Provider | None = provider_factory() if provider_factory else None
     agent = Agent(session, pack=packs, provider=provider)
+    check_model(agent.provider.model)  # governance: only approved models serve customers
     snapshot = await agent.start(overview)
+    removed = await store.start_conversation(session.session_id, session.customer_id, body.channel, packs,
+                                             agent.provider.name, agent.provider.model)
     sid = secrets.token_urlsafe(24)
     state["sessions"][sid] = Live(agent)
-    session.log("login", channel=body.channel, packs=packs)
+    session.log("login", channel=body.channel, packs=packs, retention_removed=removed)
     return {"session_id": sid, "customer": snapshot.get("customer"), "account": snapshot, "packs": packs}
+
+
+@app.get("/api/sessions/{sid}/conversations")
+async def conversations(sid: str):
+    """The signed-in customer's recent conversations (retention keeps the latest few)."""
+    live = _get(sid)
+    rows = await state["store"].recent_conversations(live.agent.session.customer_id)
+    current = live.agent.session.session_id
+    return {"conversations": [{**r, "current": r["conversation_id"] == current} for r in rows]}
+
+
+@app.get("/api/sessions/{sid}/conversations/{conversation_id}")
+async def conversation(sid: str, conversation_id: str):
+    live = _get(sid)
+    t = await state["store"].transcript(conversation_id, live.agent.session.customer_id)
+    if not t:
+        raise HTTPException(404, "Conversation not found.")
+    return t
 
 
 @app.get("/api/sessions/{sid}/account")
@@ -202,9 +231,15 @@ class Channel(BaseModel):
 
 
 @app.post("/api/sessions/{sid}/channel")
-def set_channel(sid: str, body: Channel):
+async def set_channel(sid: str, body: Channel):
     """Same conversation, different medium: only the reply style changes, tools and history carry over."""
     live = _get(sid)
+    consent = policy()["channels"].get("voice_requires_consent")
+    if body.channel == "voice" and consent:
+        profile = await state["systems"].crm.get(f"/customers/{live.agent.session.customer_id}")
+        if not profile.get("consents", {}).get(consent):
+            live.agent.session.guardrail(GuardrailEvent("channel", "voice_consent_missing", "block", {"consent": consent}))
+            raise HTTPException(403, "Voice isn't available: call recording consent hasn't been given.")
     live.agent.session.channel = body.channel
     live.agent.session.log("channel", channel=body.channel)
     return {"channel": body.channel}
@@ -246,12 +281,8 @@ class VoiceMetrics(BaseModel):
 
 @app.post("/api/sessions/{sid}/voice-metrics")
 def voice_metrics(sid: str, body: VoiceMetrics):
-    live = _get(sid)
-    entry = {"ts": time.time(), "session_id": live.agent.session.session_id, **body.model_dump()}
-    live.agent.session.log("voice_metrics", **body.model_dump())
-    VOICE_LOG.parent.mkdir(exist_ok=True)
-    with VOICE_LOG.open("a") as f:
-        f.write(json.dumps(entry) + "\n")
+    s = _get(sid).agent.session
+    s.store.record("voice_metrics", conversation_id=s.session_id, customer_id=s.customer_id, data=body.model_dump())
     return {"ok": True}
 
 
@@ -310,7 +341,8 @@ async def message(sid: str, body: Message):
                 b["failed"] += s.outcome in ("unavailable", "circuit_open")
             queue.put_nowait(_sse("done", {"text": r.text, "metrics": asdict(r.metrics), "sources": sources,
                                            "backend": backend, "refused": r.refused,
-                                           "pending_actions": list(live.agent.session.pending)}))
+                                           "pending_actions": list(live.agent.session.pending),
+                                           "guardrails": r.guardrails}))
         except Exception as e:  # surface failures to the UI instead of a dropped stream
             live.agent.session.log("turn_error", error=f"{type(e).__name__}: {e}")
             queue.put_nowait(_sse("error", {"message": "Sorry, something went wrong on our side. Please try again."}))

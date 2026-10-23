@@ -6,18 +6,20 @@ import pytest
 
 from engine import server
 from engine.clients import Systems
+from engine.storage import Store
 from tests.conftest import RoutingTransport
 from tests.offline_llm import OfflineProvider
 
 
 @pytest.fixture
-async def api():
+async def api(tmp_path):
     server.provider_factory = OfflineProvider
     server.systems_factory = lambda: Systems(transport=RoutingTransport())
+    server.store_factory = lambda: Store(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
     async with server.lifespan(server.app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app), base_url="http://api") as c:
             yield c
-    server.provider_factory, server.systems_factory = None, Systems
+    server.provider_factory, server.systems_factory, server.store_factory = None, Systems, Store
 
 
 def events(body: str) -> list[tuple[str, dict]]:
