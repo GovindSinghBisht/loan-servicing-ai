@@ -8,6 +8,10 @@ This repository is the backend: synthetic data, mock enterprise systems, the ass
 API. The customer web app (text and voice) is in
 [blue-machines-fde-web](https://github.com/GovindSinghBisht/blue-machines-fde-web).
 
+**Measured results** ([docs/PERFORMANCE.md](docs/PERFORMANCE.md)): 19/19 evaluation conversations pass with
+the real model; first word in 2.1 s (median) with backend failures injected; 1,000 concurrent conversations
+at 100% success on 6 instances, including when one instance crashes mid-run.
+
 ## Architecture
 
 ```
