@@ -94,6 +94,11 @@ Encrypt certificate automatically. Set `DEMO_ACCESS_CODE` in `.env` so sign-in n
 only with invited users. Sign-ins and messages are rate-limited (`rate_limits` in
 `data/governance/policy.json`). Also set a monthly spend limit on the OpenAI key.
 
+Prebuilt images: set `BACKEND_IMAGE` and `WEB_IMAGE` to registry images (e.g. Amazon ECR) and run
+`docker compose pull && docker compose up -d --no-build`; the server then needs only `docker-compose.yml`,
+`deploy/Caddyfile` and `.env`. Build for the server's architecture (for x86 instances:
+`docker buildx build --platform linux/amd64 ...`).
+
 ## Quick start (local development)
 
 Requires Python 3.10+ with [uv](https://docs.astral.sh/uv/). The web app additionally needs Node.js 20+.

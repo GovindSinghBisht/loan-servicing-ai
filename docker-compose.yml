@@ -4,13 +4,19 @@
 #   cd loan-servicing-ai && cp .env.example .env                              # add OPENAI_API_KEY etc.
 #   DOMAIN=loan.example.com docker compose up -d --build
 #
+# Or run prebuilt images from a registry (e.g. ECR) instead of building on the server. Then the server only
+# needs this file, deploy/Caddyfile and .env:
+#   export BACKEND_IMAGE=<registry>/loan-servicing/backend:<tag> WEB_IMAGE=<registry>/loan-servicing/web:<tag>
+#   export DOMAIN=loan.example.com
+#   docker compose pull && docker compose up -d --no-build
+#
 # Only the proxy publishes ports (80, 443). The web app, API and mock systems talk over the compose network
 # and are not reachable from outside. Without DATABASE_URL the API keeps conversations in SQLite inside
 # its container; set it in .env to use PostgreSQL.
 name: loan-servicing
 
 x-backend: &backend
-  image: loan-servicing/backend:latest
+  image: ${BACKEND_IMAGE:-loan-servicing/backend:latest}
   build: .
   restart: unless-stopped
 
@@ -54,7 +60,7 @@ services:
       retries: 10
 
   web:
-    image: loan-servicing/web:latest
+    image: ${WEB_IMAGE:-loan-servicing/web:latest}
     build:
       context: ${WEB_DIR:-../blue-machines-fde-web}
     restart: unless-stopped
