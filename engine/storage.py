@@ -120,14 +120,19 @@ class Store:
         self.is_sqlite = self.url.startswith("sqlite")
         # No pre-ping: it costs a round trip per query, which matters when the database is far away.
         # Connections are recycled periodically instead, and a failed write is logged, never fatal.
-        kwargs = {} if self.is_sqlite else {"pool_size": 5, "max_overflow": 10, "pool_recycle": 1800}
+        kwargs = {} if self.is_sqlite else {"pool_size": int(os.environ.get("DB_POOL_SIZE", 10)),
+                                            "max_overflow": int(os.environ.get("DB_MAX_OVERFLOW", 20)),
+                                            "pool_recycle": 1800}
         self.engine: AsyncEngine = create_async_engine(self.url, **kwargs)
         if self.is_sqlite:
             @event.listens_for(self.engine.sync_engine, "connect")
             def _fk_on(conn, _):  # SQLite enforces ON DELETE CASCADE only with this pragma
                 conn.execute("PRAGMA foreign_keys=ON")
+                conn.execute("PRAGMA busy_timeout=5000")  # wait for the writer instead of failing at once
         self._queue: asyncio.Queue = asyncio.Queue()
         self._worker: asyncio.Task | None = None
+        self._enqueued = self._written = 0
+        self._progress = asyncio.Condition()
 
     @property
     def backend(self) -> str:
@@ -151,16 +156,24 @@ class Store:
     def record(self, table: str, **row) -> None:
         """Queue an insert. Never blocks and never raises into the conversation."""
         row.setdefault("created_at", now())
-        self._queue.put_nowait(("insert", table, row))
+        self._put(("insert", table, row))
 
     def touch(self, conversation_id: str, turns: int, title: str | None = None) -> None:
         values = {"turns": turns, "last_active_at": now()}
         if title:
             values["title"] = title[:200]
-        self._queue.put_nowait(("touch", conversation_id, values))
+        self._put(("touch", conversation_id, values))
+
+    def _put(self, item: tuple) -> None:
+        self._queue.put_nowait(item)
+        self._enqueued += 1
 
     async def flush(self) -> None:
-        await self._queue.join()
+        """Wait until everything queued before this call is written. Later writes don't extend the wait, so
+        this stays bounded under sustained load (waiting for an empty queue might never finish)."""
+        target = self._enqueued
+        async with self._progress:
+            await self._progress.wait_for(lambda: self._written >= target)
 
     async def _drain(self) -> None:
         while True:
@@ -183,8 +196,9 @@ class Store:
             except Exception as e:  # storage problems must not break conversations
                 log.warning("storage write failed (%d rows dropped): %s", len(batch), e)
             finally:
-                for _ in batch:
-                    self._queue.task_done()
+                async with self._progress:
+                    self._written += len(batch)
+                    self._progress.notify_all()
 
     # ---- conversations ------------------------------------------------------------------------------------
 
@@ -193,10 +207,10 @@ class Store:
         """Queue the conversation row and a retention pass. The queue is FIFO, so the row lands before any of its
         messages; nothing here waits on the database, keeping sign-in fast even against a distant database."""
         ts = now()
-        self._queue.put_nowait(("insert", "conversations", dict(
+        self._put(("insert", "conversations", dict(
             conversation_id=conversation_id, customer_id=customer_id, channel=channel, packs=packs,
             provider=provider, model=model, turns=0, started_at=ts, last_active_at=ts)))
-        self._queue.put_nowait(("retention", customer_id, None))
+        self._put(("retention", customer_id, None))
 
     async def apply_retention(self, customer_id: str) -> int:
         await self.flush()
@@ -263,7 +277,7 @@ class Store:
         return dict(row) if row else None
 
     def touch_auth_session(self, token_hash: str, channel: str) -> None:
-        self._queue.put_nowait(("auth_touch", token_hash, {"last_seen_at": now(), "channel": channel}))
+        self._put(("auth_touch", token_hash, {"last_seen_at": now(), "channel": channel}))
 
     async def revoke_auth_session(self, token_hash: str, reason: str) -> None:
         async with self.engine.begin() as conn:

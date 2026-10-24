@@ -9,3 +9,5 @@ __pycache__/
 logs/
 data/*.db
 data/documents/
+evals/results/
+loadtest/results/
