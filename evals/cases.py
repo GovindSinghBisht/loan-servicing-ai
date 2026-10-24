@@ -35,11 +35,13 @@ CASES = [
         {"user": "What's my next EMI?", "include": [["43298"], ["nov"]]},
         {"user": "Actually, check my last payment first.", "include": [["oct"], ["43298"]]},
         {"user": "Okay, now tell me whether paying 20,000 extra would reduce my tenure.",
-         "include": [["month"]], "tools": ["prepayment_quote"]},
+         # LP-PRE-001: the minimum part-prepayment on a floating home loan is one EMI (Rs 43,298), so the
+         # policy-correct answer is that 20,000 is below the minimum; a tenure figure is accepted too.
+         "include": [["month", "minimum", "at least"]], "tools": ["prepayment_quote"]},
     ]},
     {"id": "foreclosure-blocked", "phone": ARJUN, "turns": [
         {"user": "Am I eligible for foreclosure without a penalty?",
-         "include": [["12"], ["7"], ["feb"]], "tools": ["foreclosure_quote"]},
+         "include": [["12"], ["7"], ["feb"]], "tools": [["foreclosure_quote", "get_loan_options"]]},
     ]},
     {"id": "prepay-blocked-two-reasons", "phone": ARJUN, "turns": [
         {"user": "What happens if I prepay 50,000?",

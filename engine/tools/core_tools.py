@@ -41,7 +41,8 @@ async def get_customer_overview(s: Session, _) -> ToolResult:
         "closed_loans": [l["loan_id"] for l in loans["loans"] if l["status"] == "CLOSED"],
         "cards": [{k: c[k] for k in card_keys} for c in cards["cards"]],
         "open_service_requests": [
-            {k: t[k] for k in ("ticket_id", "category", "status", "created_at", "sla_due_on", "sla_breached", "related_entity")}
+            {k: t[k] for k in ("ticket_id", "category", "description", "status", "created_at", "sla_due_on", "sla_breached",
+                               "related_entity")}
             for t in tickets["tickets"] if t["status"] not in ("RESOLVED", "CLOSED")],
         "unavailable_systems": unavailable,
     }

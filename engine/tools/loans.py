@@ -389,7 +389,9 @@ async def _waiver_eval(s: Session, charge_id: str) -> tuple[dict, dict, dict, li
     return found, loan, {"eligible": all(c["passed"] for c in checks), "checks": checks, "rule": rule}, open_for_this
 
 
-@tool("Check whether a bounce charge can be waived as a goodwill gesture under policy.", ChargeRef, packs=PACK)
+@tool("Check whether a bounce charge could be waived as a goodwill gesture under policy. Only for \"could I\" "
+      "questions: when the customer asks for the waiver, call request_charge_waiver instead (it checks too).",
+      ChargeRef, packs=PACK)
 async def check_charge_waiver(s: Session, a: ChargeRef) -> ToolResult:
     charge, loan, ev, _ = await _waiver_eval(s, a.charge_id)
     return ToolResult({"charge": {k: charge[k] for k in ("charge_id", "loan_id", "type", "total", "levied_on", "status")},

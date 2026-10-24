@@ -24,7 +24,8 @@ load_dotenv()
 
 from engine.agent import Agent  # noqa: E402
 from engine.clients import SYSTEMS, Systems  # noqa: E402
-from engine.core import Session  # noqa: E402
+from engine.core import Session, execute  # noqa: E402
+from engine.packs import packs_for  # noqa: E402
 import engine.tools  # noqa: E402,F401
 
 from .cases import CASES  # noqa: E402
@@ -47,8 +48,8 @@ def grade(turn: dict, r) -> list[str]:
         if norm(bad) in text:
             problems.append(f"contains '{bad}'")
     called = {c["name"] for c in r.tool_calls}
-    for t in turn.get("tools", []):
-        if t not in called:
+    for t in turn.get("tools", []):  # a list entry means any one of those tools will do
+        if not called & ({t} if isinstance(t, str) else set(t)):
             problems.append(f"did not call {t}")
     for t in turn.get("no_tools", []):
         if any(c["name"] == t and c["ok"] and c["status"] != "CONFIRMATION_REQUIRED" for c in r.tool_calls):
@@ -71,8 +72,10 @@ DEFAULTS: dict[str, dict] = {}
 
 async def run_case(case: dict, systems: Systems) -> dict:
     customer = await systems.crm.get("/customers/lookup", phone=case["phone"])
-    agent = Agent(Session(customer_id=customer["customer_id"], systems=systems))
-    await agent.start()
+    session = Session(customer_id=customer["customer_id"], systems=systems)
+    overview = await execute(session, "get_customer_overview", {})
+    agent = Agent(session, pack=packs_for(overview.get("data") or {}))  # same pack choice as the API
+    await agent.start(overview)
     turns = []
     for turn in case["turns"]:
         try:

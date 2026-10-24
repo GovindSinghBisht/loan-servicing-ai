@@ -163,7 +163,9 @@ async def _reversal_eval(s: Session, card_id: str) -> tuple[dict, dict, dict]:
              "late_statement": late["statement_date"]}, rule, {"fee_statement": fee_statement})
 
 
-@tool("Check whether a card late payment fee can be reversed as a one-time goodwill gesture.", CardRef, packs=PACK)
+@tool("Check whether a card late payment fee could be reversed as a one-time goodwill gesture. Only for \"could I\" "
+      "questions: when the customer asks for the reversal, call request_late_fee_reversal instead (it checks too).",
+      CardRef, packs=PACK)
 async def check_late_fee_reversal(s: Session, a: CardRef) -> ToolResult:
     ev, rule, _ = await _reversal_eval(s, a.card_id)
     return ToolResult({"card_id": a.card_id, **ev}, [f"cards:{a.card_id}", cite(rule)])
