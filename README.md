@@ -12,6 +12,9 @@ API. The customer web app (text and voice) is in
 the real model; first word in 2.1 s (median) with backend failures injected; 1,000 concurrent conversations
 at 100% success on 6 instances, including when one instance crashes mid-run.
 
+**Design write-up** ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)): architecture, key decisions and their
+trade-offs, known limits, the path to production, and how to add a workflow.
+
 ## Architecture
 
 ```
