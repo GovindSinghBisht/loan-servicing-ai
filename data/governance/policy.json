@@ -6,6 +6,13 @@
     "absolute_hours": 8,
     "note": "Login sessions expire after this much inactivity or total time. Tokens are stored only as SHA-256 hashes."
   },
+  "rate_limits": {
+    "login_per_ip_per_minute": 10,
+    "messages_per_session_per_minute": 12,
+    "messages_per_ip_per_minute": 60,
+    "tts_per_session_per_minute": 120,
+    "note": "Per minute, per API instance. Protects the public demo and the LLM budget; exceeding a limit returns HTTP 429."
+  },
   "retention": {
     "conversations_per_customer": 5,
     "note": "Older conversations (messages, tool calls, metrics) are deleted. Audit and guardrail events are retained separately."

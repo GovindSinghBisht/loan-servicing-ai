@@ -76,7 +76,25 @@ trade-offs, known limits, the path to production, and how to add a workflow.
   customer: model calls with token usage, every tool call, guardrail decisions. PII is masked before data
   leaves the service. Enabled by setting `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`.
 
-## Quick start
+## Run with Docker (whole stack, one command)
+
+Clone this repo and the [web app](https://github.com/GovindSinghBisht/blue-machines-fde-web) side by side,
+then:
+
+```bash
+cp .env.example .env                      # add OPENAI_API_KEY (and DATABASE_URL, Langfuse keys if used)
+DOMAIN=localhost docker compose up -d --build
+```
+
+Open https://localhost (Caddy's local certificate; accept the browser warning). `docker-compose.yml` runs
+four containers: Caddy (HTTPS, the only published ports), the web app, the API and the mock systems.
+Calls to `/api/*` go to the API and everything else to the web app, all on one HTTPS origin. For a
+public server, point a DNS record at it and use `DOMAIN=loan.example.com`; Caddy obtains a Let's
+Encrypt certificate automatically. Set `DEMO_ACCESS_CODE` in `.env` so sign-in needs a code you share
+only with invited users. Sign-ins and messages are rate-limited (`rate_limits` in
+`data/governance/policy.json`). Also set a monthly spend limit on the OpenAI key.
+
+## Quick start (local development)
 
 Requires Python 3.10+ with [uv](https://docs.astral.sh/uv/). The web app additionally needs Node.js 20+.
 

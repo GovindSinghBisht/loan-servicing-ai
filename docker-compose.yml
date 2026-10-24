@@ -1,0 +1,83 @@
+# The whole stack on one host: HTTPS proxy, web app, assistant API and the mock enterprise systems.
+#
+#   git clone .../loan-servicing-ai && git clone .../blue-machines-fde-web     # side by side
+#   cd loan-servicing-ai && cp .env.example .env                              # add OPENAI_API_KEY etc.
+#   DOMAIN=loan.example.com docker compose up -d --build
+#
+# Only the proxy publishes ports (80, 443). The web app, API and mock systems talk over the compose network
+# and are not reachable from outside. Without DATABASE_URL the API keeps conversations in SQLite inside
+# its container; set it in .env to use PostgreSQL.
+name: loan-servicing
+
+x-backend: &backend
+  image: loan-servicing/backend:latest
+  build: .
+  restart: unless-stopped
+
+services:
+  mocks:
+    <<: *backend
+    command: ["python", "-m", "mock_systems.run"]
+    environment:
+      MOCK_HOST: 0.0.0.0
+      MOCK_API_KEY: ${MOCK_API_KEY:-dev-key}   # the API reads the same value from .env
+      CHAOS: ${CHAOS:-on}
+    volumes:
+      - documents:/app/data/documents    # repayment statements the lender generates
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8106/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    <<: *backend
+    env_file: .env
+    environment:
+      CRM_URL: http://mocks:8101
+      LOANS_URL: http://mocks:8102
+      PAYMENTS_URL: http://mocks:8103
+      POLICY_URL: http://mocks:8104
+      SERVICE_OPS_URL: http://mocks:8105
+      CARDS_URL: http://mocks:8106
+      WEB_ORIGINS: https://${DOMAIN:-localhost}
+      DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:////app/data/local.db}
+      APP_ENV: ${APP_ENV:-production}
+      DEMO_ACCESS_CODE: ${DEMO_ACCESS_CODE:-}   # from .env or the shell; empty = no access code
+    depends_on:
+      mocks:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  web:
+    image: loan-servicing/web:latest
+    build:
+      context: ${WEB_DIR:-../blue-machines-fde-web}
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2.8.4-alpine
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data        # certificates survive restarts
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  documents:
+  caddy_data:
+  caddy_config:

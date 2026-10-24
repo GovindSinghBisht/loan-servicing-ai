@@ -1,0 +1,24 @@
+# One HTTPS origin for the whole app. Caddy obtains and renews the certificate for $DOMAIN automatically
+# (DOMAIN=localhost uses Caddy's local CA, for testing). TLS ends here; traffic to the containers stays
+# on the private compose network.
+{$DOMAIN} {
+	# API, including the streamed chat replies: flush every event immediately and never compress the stream.
+	handle /api/* {
+		reverse_proxy api:8000 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		encode zstd gzip
+		reverse_proxy web:3000
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "microphone=(self), camera=(), geolocation=()"
+		-Server
+	}
+}

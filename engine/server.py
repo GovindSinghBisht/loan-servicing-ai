@@ -48,6 +48,7 @@ from .core import Session, execute  # noqa: E402
 from .governance import GuardrailEvent, check_model, policy  # noqa: E402
 from .observability import tracer  # noqa: E402
 from .packs import packs_for  # noqa: E402
+from .ratelimit import RateLimiter  # noqa: E402
 from .storage import Store  # noqa: E402
 from .llm import Provider  # noqa: E402
 import engine.tools  # noqa: E402,F401
@@ -119,6 +120,7 @@ async def lifespan(_: FastAPI):
     await state["store"].init()
     state["sessions"] = {}
     state["background"] = set()
+    state["limiter"] = RateLimiter()
     yield
     await asyncio.gather(*state["background"], return_exceptions=True)
     await state["store"].close()
@@ -222,6 +224,24 @@ async def current(authorization: str | None = Header(None)) -> Live:
     return live
 
 
+def _limit(key: str, rule: str, what: str) -> None:
+    """429 when `key` has used up the per-minute allowance named `rule` in the governance policy."""
+    wait = state["limiter"].allow(key, policy()["rate_limits"][rule])
+    if wait is not None:
+        raise HTTPException(429, f"Too many {what}. Please wait {int(wait) + 1} seconds and try again.",
+                            headers={"Retry-After": str(int(wait) + 1)})
+
+
+def _client_ip(request: Request) -> str:
+    # Behind the proxy, uvicorn runs with --proxy-headers so this is the caller's address, not the proxy's.
+    return request.client.host if request.client else "unknown"
+
+
+def _access_code() -> str:
+    """When set, sign-in also needs this code: it keeps a public demo URL (and its LLM budget) to invited users."""
+    return os.environ.get("DEMO_ACCESS_CODE", "")
+
+
 def tts_backend() -> str:
     if os.environ.get("VOICE_TTS", "openai") == "openai" and os.environ.get("OPENAI_API_KEY"):
         return "openai"
@@ -231,7 +251,8 @@ def tts_backend() -> str:
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "business_date": await state["systems"].business_date(), "tts": tts_backend(),
-            "storage": state["store"].backend, "tracing": "langfuse" if tracer.enabled else "off"}
+            "storage": state["store"].backend, "tracing": "langfuse" if tracer.enabled else "off",
+            "access_code_required": bool(_access_code())}
 
 
 @app.get("/api/demo-customers")
@@ -243,10 +264,14 @@ class Login(BaseModel):
     phone: str
     otp: str
     channel: Literal["text", "voice"] = "text"
+    access_code: str | None = None
 
 
 @app.post("/api/login")
 async def login(body: Login, request: Request):
+    _limit(f"login:{_client_ip(request)}", "login_per_ip_per_minute", "sign-in attempts")
+    if (code := _access_code()) and not secrets.compare_digest((body.access_code or "").strip(), code):
+        raise HTTPException(403, "Incorrect access code.")
     if body.otp != DEMO_OTP:
         raise HTTPException(401, "Incorrect OTP.")
     try:
@@ -352,7 +377,8 @@ class Speech(BaseModel):
 
 
 @app.post("/api/tts")
-async def tts(body: Speech, _: Live = Depends(current)):  # signed-in only, so this is not an open TTS proxy
+async def tts(body: Speech, live: Live = Depends(current)):  # signed-in only, so this is not an open TTS proxy
+    _limit(f"tts:{live.token_hash}", "tts_per_session_per_minute", "speech requests")
     if tts_backend() != "openai":
         raise HTTPException(503, "Server speech is not configured; use the browser voice.")
     text = body.text.strip()[:600]
@@ -396,7 +422,9 @@ def _sse(event: str, data: dict) -> str:
 
 
 @app.post("/api/messages")
-async def message(body: Message, live: Live = Depends(current)):
+async def message(body: Message, request: Request, live: Live = Depends(current)):
+    _limit(f"msg:{live.token_hash}", "messages_per_session_per_minute", "messages")
+    _limit(f"msg-ip:{_client_ip(request)}", "messages_per_ip_per_minute", "messages")
     text = body.text.strip()[:2000]
     if not text:
         raise HTTPException(422, "Empty message")

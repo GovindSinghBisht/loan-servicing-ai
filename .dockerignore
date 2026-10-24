@@ -1,0 +1,13 @@
+.git
+.venv
+.env
+.env.*
+**/__pycache__
+.pytest_cache
+data/generated
+data/documents
+data/*.db
+logs
+evals/results
+loadtest/results
+*.pem
