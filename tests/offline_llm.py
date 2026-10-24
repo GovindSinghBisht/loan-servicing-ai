@@ -84,6 +84,9 @@ class OfflineProvider:
             if tickets:
                 return [ToolCall(self._id(), "escalate_service_request",
                                  {"ticket_id": tickets[0]["ticket_id"], "reason": text})]
+        if "statement" in t and lid:
+            fy = re.search(r"20\d\d-\d\d", t)
+            return [ToolCall(self._id(), "request_repayment_statement", {**lid, **({"financial_year": fy.group(0)} if fy else {})})]
         if "prepay" in t and amount and lid:
             return [ToolCall(self._id(), "prepayment_quote", {**lid, "amount": float(amount.group(1).replace(",", ""))})]
         if "foreclos" in t and lid:
@@ -160,6 +163,10 @@ class OfflineProvider:
             st = d.get("latest_statement") or {}
             return (f"Your card ending {d['card_number_masked'][-4:]} has {_rs(d['outstanding'])} outstanding; the latest "
                     f"bill of {_rs(st.get('total_due'))} is due {st.get('due_date')}.")
+        if name == "request_repayment_statement":
+            t = d["totals"]
+            return (f"Your FY {d['document']['financial_year']} statement for {d['document']['loan_id']} is ready to download. "
+                    f"You paid {_rs(t['interest_paid'])} in interest and {_rs(t['principal_paid'])} in principal.")
         if name == "get_loan_details":
             return f"Your EMI on {d['loan_id']} is {_rs(d['current_emi'])}, next due {d['next_due_date']}."
         return "Done."

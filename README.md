@@ -27,6 +27,10 @@ API. The customer web app (text and voice) is in
 - **Security**: the verified customer id is injected server-side, never supplied by the model; ownership
   is checked on every id; actions return a proposal and only execute after the customer confirms in a
   later turn; every tool call, action and guardrail decision is recorded in the database.
+- **Documents** (`mock_systems/statements.py`): repayment statements are produced by the lender, not the
+  assistant. The assistant requests one; the mock loan system generates a fixed-format PDF from its own
+  records (instalments, principal and interest paid, charges, opening and closing balance), stores it and
+  serves it back by reference only to the customer who owns it. The chat shows a download button.
 - **Login sessions** (`engine/server.py`): sign-in returns a random bearer token that the server stores only
   as a SHA-256 hash, with idle (30 min) and absolute (8 h) expiry from the governance policy. It travels
   in the `Authorization` header, never in URLs, so it cannot leak into access logs. A refresh or an API

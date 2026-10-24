@@ -9,6 +9,7 @@ are being checked) and the reply token by token instead of a spinner:
     filler       {text}                              voice only: something to say while lookups run
     tool_result  {name, ok, error, sources}          a tool finished
     action       {action_id, summary, details}       an action awaits the customer's confirmation
+    document     {document_id, file_name, ...}       a document is ready to download
     text         {delta}                             reply text
     done         {text, metrics, sources, backend}   turn complete
     error        {message}
@@ -73,6 +74,7 @@ TOOL_LABELS = {
     "raise_payment_dispute": "Preparing payment dispute",
     "list_service_requests": "Checking your service requests",
     "escalate_service_request": "Preparing escalation",
+    "request_repayment_statement": "Requesting your statement from the loan system",
     "get_card_details": "Checking your card",
     "explain_card_charges": "Checking your card statements and fee rules",
     "get_card_transactions": "Checking card transactions",
@@ -92,6 +94,7 @@ VOICE_FILLERS = {
     "foreclosure_quote": "Let me calculate the closure amount.",
     "get_loan_options": "Let me see what options you have.",
     "list_service_requests": "Let me pull up your requests.",
+    "request_repayment_statement": "Let me get that statement for you.",
     "explain_card_charges": "Let me look at your card statements.",
     "get_card_transactions": "Let me check your card transactions.",
     "confirm_action": "Submitting that now.",
@@ -313,6 +316,19 @@ async def account(live: Live = Depends(current)):
     return r["data"]
 
 
+@app.get("/api/documents/{document_id}")
+async def document(document_id: str, live: Live = Depends(current)):
+    """Download a document issued by the lender. Ownership is enforced by the lender system itself."""
+    try:
+        content, media_type = await state["systems"].loans.get_bytes(
+            f"/documents/{document_id}", customer_id=live.agent.session.customer_id)
+    except NotFound:
+        raise HTTPException(404, "Document not found.")
+    live.agent.session.log("document_downloaded", document_id=document_id)
+    return Response(content=content, media_type=media_type,
+                    headers={"Content-Disposition": f'attachment; filename="{document_id}.pdf"', "Cache-Control": "no-store"})
+
+
 class Channel(BaseModel):
     channel: Literal["text", "voice"]
 
@@ -411,6 +427,8 @@ async def message(body: Message, live: Live = Depends(current)):
                                               "system": out.get("system"), "sources": out.get("sources", [])}))
         if out.get("status") == "CONFIRMATION_REQUIRED":
             queue.put_nowait(_sse("action", {k: out[k] for k in ("action_id", "summary", "details")}))
+        if out.get("ok") and (doc := (out.get("data") or {}).get("document")):
+            queue.put_nowait(_sse("document", doc))
 
     async def run() -> None:
         try:

@@ -14,6 +14,7 @@ dependencies = [
     "asyncpg>=0.32.0",
     "aiosqlite>=0.22.1",
     "langfuse>=4.18.0",
+    "fpdf2>=2.8.9",
 ]
 
 [dependency-groups]

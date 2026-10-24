@@ -120,6 +120,26 @@ class SystemClient:
             self.cache[key] = (time.monotonic(), value)
         return value
 
+    async def get_bytes(self, path: str, **params) -> tuple[bytes, str]:
+        """Fetch a binary document (e.g. a PDF). Same timeout and circuit breaker; no retries for large bodies."""
+        if not self.breaker.allow():
+            raise SystemUnavailable(self.name, "circuit open after repeated failures")
+        started = time.perf_counter()
+        try:
+            r = await self.http.get(self.config.base_url + path, params=params, timeout=self.config.timeout_s * 2,
+                                    headers={"x-api-key": API_KEY})
+        except httpx.TransportError as e:
+            self.breaker.failure()
+            raise SystemUnavailable(self.name, type(e).__name__)
+        if r.status_code == 404:
+            raise NotFound(self.name, path)
+        if r.status_code >= 500:
+            self.breaker.failure()
+            raise SystemUnavailable(self.name, f"HTTP {r.status_code}")
+        self.breaker.success()
+        _record(Span(self.name, "GET", path, _ms(started), 1, "ok"))
+        return r.content, r.headers.get("content-type", "application/octet-stream")
+
     async def post(self, path: str, body: dict, idempotency_key: str | None = None) -> Any:
         headers = {"Idempotency-Key": idempotency_key or str(uuid.uuid4())}
         return await self._request("POST", path, json=body, headers=headers)

@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, timedelta
+
+import httpx
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -470,3 +472,34 @@ async def raise_payment_dispute(s: Session, a: DisputeArgs) -> Proposal | ToolRe
         run=lambda: create_ticket(s, "PAYMENT_DISPUTE", {"type": "LOAN", "id": loan["loan_id"], "payment_id": a.payment_id},
                             a.reason, {"policy": cite(rule)}, f"{s.session_id}:dispute:{a.payment_id}"),
     )
+
+
+class StatementArgs(LoanRef):
+    financial_year: str | None = Field(None, description="Financial year as YYYY-YY, e.g. 2025-26. Omit for the "
+                                                         "last completed financial year.")
+
+
+@tool("Get the official repayment statement for a loan and financial year from the lender (a PDF the customer can "
+      "download): instalments, principal and interest paid, charges, opening and closing balance. Use for tax "
+      "documents, 'interest certificate' or 'statement' requests.", StatementArgs, packs=PACK)
+async def request_repayment_statement(s: Session, a: StatementArgs) -> ToolResult:
+    loan = await owned_loan(s, a.loan_id)
+    today = await _today(s)
+    fy = a.financial_year or f"{fy_start(today).year - 1}-{str(fy_start(today).year)[2:]}"
+    rule = by_id(await clauses(s, loan["product"], "SERVICE"), "LP-SVC-002")
+    try:
+        doc = await s.systems.loans.post(f"/loans/{a.loan_id}/statements", {"financial_year": fy},
+                                         idempotency_key=f"{s.session_id}:stmt:{a.loan_id}:{fy}")
+    except httpx.HTTPStatusError as e:
+        detail = e.response.json().get("detail", {}) if e.response.headers.get("content-type", "").startswith("application/json") else {}
+        raise ToolError(detail.get("error", "INVALID_REQUEST"), "The lender could not issue a statement for that period.",
+                        **{k: v for k, v in detail.items() if k != "error"})
+    s.log("document_issued", document_id=doc["document_id"], loan_id=a.loan_id, financial_year=fy)
+    return ToolResult({
+        "document": {"document_id": doc["document_id"], "file_name": doc["file_name"], "financial_year": fy,
+                     "loan_id": a.loan_id, "format": "PDF", "issued_by": "lender loan management system"},
+        "totals": doc["totals"],
+        "fee": rule["params"]["digital_fee"],
+        "note": "Tell the customer the statement is ready to download below; mention the interest and principal "
+                "paid if relevant. Physical copies: " + rule["text"].split(". ", 1)[1],
+    }, [f"loans:{a.loan_id}/statement/{fy}", cite(rule)])
