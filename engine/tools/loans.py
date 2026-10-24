@@ -15,7 +15,8 @@ from pydantic import BaseModel, Field
 from shared.finance import add_months, prepayment_impact
 
 from ..core import Proposal, Session, ToolError, ToolResult, tool
-from .shared import by_id, check, cite, clauses, create_ticket, customer_loans, fy_start, match, owned_loan, r2
+from .shared import (by_id, check, cite, clauses, create_ticket, customer_loans, fy_start, match, owned_loan,
+                     propose_next, r2)
 
 PACK = ("loans",)
 GST = 0.18
@@ -109,6 +110,16 @@ async def explain_emi_change(s: Session, a: EmiChangeArgs) -> ToolResult:
     }, sources)
 
 
+def _charge_view(c: dict) -> dict:
+    view = {k: c[k] for k in ("charge_id", "type", "amount", "gst", "total", "status", "policy_ref", "waiver_reason")}
+    if c["type"] == "BOUNCE_CHARGE" and c["status"] != "WAIVED":
+        # Customer-caused bounces aren't waived automatically (LP-CHG-002 covers bank-side failures only), but a
+        # goodwill waiver can be requested under LP-CHG-004. Saying so here stops the model from concluding
+        # "not waivable" from the automatic-waiver rule alone.
+        view["goodwill_waiver"] = "May be possible under LP-CHG-004: call request_charge_waiver with this charge_id."
+    return view
+
+
 class PaymentHistoryArgs(LoanRef):
     months: int = Field(6, ge=1, le=36, description="How many months back to look")
     include_successful: bool = Field(False, description="Also list routine successful EMI debits")
@@ -137,8 +148,7 @@ async def get_payment_history(s: Session, a: PaymentHistoryArgs) -> ToolResult:
             "attempts": [{k: p[k] for k in ("payment_id", "value_date", "channel", "status", "failure_code",
                                              "failure_reason", "presentation_no")} for p in attempts],
             "outcome": f"cleared on {cleared['value_date']} via {cleared['channel']}" if cleared else "STILL_OVERDUE",
-            "charges": [{k: c[k] for k in ("charge_id", "type", "amount", "gst", "total", "status", "policy_ref",
-                                           "waiver_reason")} for c in inst_charges],
+            "charges": [_charge_view(c) for c in inst_charges],
         })
         sources |= {f"payments:{p['payment_id']}" for p in attempts}
         sources |= {f"policy:{c['policy_ref']}" for c in inst_charges}
@@ -394,9 +404,11 @@ async def _waiver_eval(s: Session, charge_id: str) -> tuple[dict, dict, dict, li
       ChargeRef, packs=PACK)
 async def check_charge_waiver(s: Session, a: ChargeRef) -> ToolResult:
     charge, loan, ev, _ = await _waiver_eval(s, a.charge_id)
-    return ToolResult({"charge": {k: charge[k] for k in ("charge_id", "loan_id", "type", "total", "levied_on", "status")},
-                       "eligible": ev["eligible"], "checks": ev["checks"]},
-                      [f"loans:{loan['loan_id']}/charges/{a.charge_id}", cite(ev["rule"])])
+    data = {"charge": {k: charge[k] for k in ("charge_id", "loan_id", "type", "total", "levied_on", "status")},
+            "eligible": ev["eligible"], "checks": ev["checks"]}
+    if ev["eligible"]:
+        data["next_step"] = propose_next("request_charge_waiver")
+    return ToolResult(data, [f"loans:{loan['loan_id']}/charges/{a.charge_id}", cite(ev["rule"])])
 
 
 # ---------------------------------------------------------------------------------------------------------

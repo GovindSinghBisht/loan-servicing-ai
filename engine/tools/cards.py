@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from ..clients import NotFound
 from ..core import Proposal, Session, ToolError, ToolResult, tool
-from .shared import by_id, check, cite, clauses, create_ticket, r2
+from .shared import by_id, check, cite, clauses, create_ticket, propose_next, r2
 
 PACK = ("cards",)
 PRODUCT = "CREDIT_CARD"
@@ -168,7 +168,10 @@ async def _reversal_eval(s: Session, card_id: str) -> tuple[dict, dict, dict]:
       CardRef, packs=PACK)
 async def check_late_fee_reversal(s: Session, a: CardRef) -> ToolResult:
     ev, rule, _ = await _reversal_eval(s, a.card_id)
-    return ToolResult({"card_id": a.card_id, **ev}, [f"cards:{a.card_id}", cite(rule)])
+    data = {"card_id": a.card_id, **ev}
+    if ev["eligible"]:
+        data["next_step"] = propose_next("request_late_fee_reversal")
+    return ToolResult(data, [f"cards:{a.card_id}", cite(rule)])
 
 
 @tool("Request a goodwill reversal of a card late fee (checks eligibility first). Requires confirmation.",

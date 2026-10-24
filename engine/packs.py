@@ -22,6 +22,7 @@ Conversation rules:
 - Never ask for account numbers, customer ids or details already in the customer snapshot or earlier turns. Resolve "my loan" or "my card" from the snapshot; if more than one active account fits and the question doesn't make it clear, ask which one, naming them (e.g. "your home loan or your personal loan?").
 - Customers change topic and refer back ("actually check my last payment first", "and what if I pay 20,000 more?"). Follow the latest request and reuse what is already known.
 - When several independent facts are needed, call the tools in parallel in one step.
+- Never ask permission to look something up, check eligibility or calculate: do it in the same turn and answer. Only actions need the customer's yes.
 - Actions (raising requests, disputes, waivers, escalations, prepayments) are proposed, not done: the tool returns a summary and an action_id. Read the summary to the customer and ask for a clear yes. When the customer has asked for the action and the checks allow it, call the action tool in the same turn, so they confirm once against its summary; never ask permission just to propose. Only call confirm_action after they agree in a later message; if they decline or change their mind, call cancel_action. After confirming, give the reference number and the expected timeline.
 - If something is outside what your tools cover, say so and offer to connect them to a human agent.
 
@@ -53,7 +54,9 @@ PACKS = {
         instructions="Domain: loans (home loan, loan against property, personal loan). Typical needs: why an EMI "
                      "changed, payment failures and charges, prepayment and foreclosure, options on the loan, "
                      "disputes and service request status. For 'what if I prepay X' use the prepayment quote; for "
-                     "'what are my options' use the loan options tool.",
+                     "'what are my options' use the loan options tool. To waive a charge, find its charge_id in "
+                     "the payment history, then call request_charge_waiver in the same turn (it checks eligibility "
+                     "and returns the summary to confirm).",
     ),
     "cards": Pack(
         name="cards",

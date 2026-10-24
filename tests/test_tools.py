@@ -32,7 +32,16 @@ async def test_priya_topup_blocked_by_recent_bounce_but_waiver_allowed(session):
     s = session("CUST100001")
     opts = {o["option"]: o for o in (await execute(s, "get_loan_options", {"loan_id": "HL1000001"}))["data"]["options"]}
     assert not opts["TOP_UP_LOAN"]["available"] and opts["PART_PREPAYMENT"]["available"]
-    assert (await execute(s, "check_charge_waiver", {"charge_id": "CHG-0000003"}))["data"]["eligible"]
+    waiver = (await execute(s, "check_charge_waiver", {"charge_id": "CHG-0000003"}))["data"]
+    assert waiver["eligible"] and "request_charge_waiver" in waiver["next_step"], "eligible: propose in the same turn"
+
+
+async def test_payment_history_marks_goodwill_waiver_only_on_unwaived_bounces(session):
+    d = (await execute(session("CUST100001"), "get_payment_history", {"loan_id": "HL1000001"}))["data"]
+    charges = [c for i in d["failed_debit_incidents"] for c in i["charges"]]
+    open_bounces = [c for c in charges if c["type"] == "BOUNCE_CHARGE" and c["status"] != "WAIVED"]
+    assert open_bounces and all("request_charge_waiver" in c["goodwill_waiver"] for c in open_bounces)
+    assert all("goodwill_waiver" not in c for c in charges if c["status"] == "WAIVED"), "already waived: no nudge"
 
 
 async def test_arjun_prepayment_and_foreclosure_blocked(session):

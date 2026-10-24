@@ -14,7 +14,8 @@ async def test_late_fee_explained_from_failed_autopay_and_slab(session):
 
 async def test_late_fee_reversal_proposed_then_confirmed(session):
     s = session("CUST100002")
-    assert (await execute(s, "check_late_fee_reversal", {"card_id": "CC1000001"}))["data"]["eligible"]
+    first = (await execute(s, "check_late_fee_reversal", {"card_id": "CC1000001"}))["data"]
+    assert first["eligible"] and "request_late_fee_reversal" in first["next_step"]
     proposal = await execute(s, "request_late_fee_reversal", {"card_id": "CC1000001"})
     assert proposal["status"] == "CONFIRMATION_REQUIRED" and proposal["details"]["amount"] == 1121.0
     s.begin_turn()
@@ -22,6 +23,7 @@ async def test_late_fee_reversal_proposed_then_confirmed(session):
     assert done["data"]["category"] == "LATE_FEE_REVERSAL"
     again = await execute(s, "check_late_fee_reversal", {"card_id": "CC1000001"})
     assert not again["data"]["eligible"], "an open request blocks a duplicate"
+    assert "next_step" not in again["data"], "no nudge to propose when not eligible"
 
 
 async def test_existing_card_dispute_is_returned_not_duplicated(session):

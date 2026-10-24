@@ -56,6 +56,14 @@ def check(rule: str, passed: bool, detail: str) -> dict:
     return {"rule": rule, "passed": passed, "detail": detail}
 
 
+def propose_next(action_tool: str) -> str:
+    """Guidance attached to an eligible check, so a customer who asked for the action confirms it once.
+    (Asking "shall I raise it?" and then proposing would make them confirm twice.)"""
+    return (f"Eligible. If the customer asked for this (e.g. 'can you waive it', 'please reverse it'), call "
+            f"{action_tool} now, in this same turn, and read its summary so they confirm once. Only ask first if "
+            f"they just wanted to know whether it is possible.")
+
+
 def r2(x: float) -> float:
     return round(x, 2)
 
