@@ -140,18 +140,8 @@ uv run python -m engine.cli --phone +919800000001
 To work on the interface without an OpenAI key, run `uv run python -m tests.offline_server` instead of the
 API. It uses a simple keyword based stand in for the model that still calls the real tools.
 
-Without any database settings the API uses a local SQLite file. To use PostgreSQL, put the server's admin
-credentials in `.env` as `DB_HOST`, `DB_ADMIN_USER` and `DB_ADMIN_PASSWORD`, and run this once:
-
-```bash
-uv run python -m engine.db_setup
-```
-
-It creates the database and its tables as the admin, then a separate application user that only has the
-table rights the code needs. That user can read and write conversations but can only add rows to the
-audit and guardrail tables, so even a compromised application could not rewrite the audit trail. The
-script writes the application user's `DATABASE_URL` into `.env`, and you can remove the admin password
-afterwards.
+No database setup is needed for local development. The section on the database below explains the tables
+and how to switch to PostgreSQL.
 
 The tests run without an API key. The evaluation runs 19 graded conversations against the real model and
 reports latency:
@@ -169,6 +159,67 @@ unreliable, which is useful in a demo:
 ```bash
 curl -X PUT localhost:8103/admin/chaos -H 'content-type: application/json' -d '{"p50_ms": 1500, "error_rate": 0.3}'
 ```
+
+## Database
+
+You do not need to set up a database to try the project. Without any database settings the API stores
+everything in a local SQLite file at `data/local.db` and creates the tables itself the first time it
+starts. The Docker setup does the same inside the API container.
+
+The database only holds what the assistant itself owns. Customer, loan, payment and card data stays in
+the enterprise systems, which here are the mock services. There are eight tables.
+
+| Table | What it stores |
+|---|---|
+| `conversations` | One row per conversation, with the customer, channel, enabled packs, model and turn count |
+| `messages` | What the customer said and what the assistant replied, with secrets already removed |
+| `tool_calls` | Each tool the assistant called in a turn, its arguments and whether it succeeded |
+| `turn_metrics` | Timings and token counts for every turn |
+| `auth_sessions` | Login sessions, stored as a hash of the token with expiry and revocation times |
+| `audit_events` | Sign ins, tool calls, executed actions and errors. Rows can be added but never changed |
+| `guardrail_events` | Every guardrail decision, such as a redacted card number or a blocked secret. Add only |
+| `voice_metrics` | Timings reported by the browser for voice turns |
+
+Each customer keeps their last five conversations, and older ones are deleted together with their
+messages, tool calls and timings. Audit and guardrail events are kept separately and are not deleted.
+
+### Using PostgreSQL
+
+The setup script creates the database, the tables and a separate application user with only the rights
+the code needs. To try it locally, start PostgreSQL in Docker:
+
+```bash
+docker run -d --name loan-postgres -e POSTGRES_PASSWORD=change-me -p 5432:5432 postgres:16
+```
+
+Then add the admin connection to `.env`. `DB_SSL=disable` is needed here because the local container
+does not use TLS. Leave it out for a managed database such as Amazon RDS, which requires TLS.
+
+```
+DB_HOST=127.0.0.1
+DB_PORT=5432
+DB_ADMIN_USER=postgres
+DB_ADMIN_PASSWORD=change-me
+DB_SSL=disable
+```
+
+Run the setup once:
+
+```bash
+uv run python -m engine.db_setup
+```
+
+It creates a database called `blue_machines` and all eight tables, owned by the admin. It then creates
+the user `blue_machines_app` with a random password and gives it only what the code needs. That user can
+read and write conversations and delete old ones for retention, but it can only add rows to the audit and
+guardrail tables, and it cannot create, change or drop any table. Even a compromised application could
+not rewrite the audit trail or damage the schema. Other roles on the server are not allowed to connect to
+this database.
+
+At the end the script writes `DATABASE_URL` for the application user into `.env`. Remove the
+`DB_ADMIN_PASSWORD` line afterwards, since the API never needs it, and restart the API. You can run the
+script again at any time. It keeps the existing data and gives the application user a new password.
+Calling `/api/health` shows which storage the API is using.
 
 ## Repository layout
 

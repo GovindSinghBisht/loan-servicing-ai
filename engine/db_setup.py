@@ -4,7 +4,8 @@
 
 Admin access comes from .env, never the command line: DATABASE_ADMIN_URL, or DB_HOST, DB_PORT (5432),
 DB_ADMIN_USER, DB_ADMIN_PASSWORD, DB_ADMIN_DATABASE (postgres).
-Optional: DB_NAME (blue_machines), DB_APP_USER (blue_machines_app).
+Optional: DB_NAME (blue_machines), DB_APP_USER (blue_machines_app), DB_SSL (require; use disable for a local
+PostgreSQL without TLS).
 
 What it does (safe to re-run; the app password is rotated each run):
 - creates the database if missing and the schema as the admin, so the admin owns every table;
@@ -73,8 +74,12 @@ async def main() -> None:
         if not IDENT.match(ident):
             sys.exit(f"Invalid identifier {ident!r}")
     app_pw = secrets.token_urlsafe(32)
+    ssl = os.environ.get("DB_SSL", "require")  # managed databases need TLS; a local container usually has none
+    if ssl not in ("require", "disable"):
+        sys.exit("DB_SSL must be require or disable")
+    url_ssl = "?ssl=require" if ssl == "require" else ""
     connect = dict(host=admin["host"], port=admin["port"], user=admin["user"], password=admin["password"],
-                   ssl="require", timeout=15)
+                   ssl="require" if ssl == "require" else False, timeout=15)
 
     print(f"Connecting to {admin['host']} as {admin['user']} ...")
     conn = await asyncpg.connect(database=admin["database"], **connect)
@@ -99,7 +104,7 @@ async def main() -> None:
 
     # Schema is created by the admin, so the admin (not the app) owns every table.
     admin_url = (f"postgresql+asyncpg://{quote(admin['user'], safe='')}:{quote(admin['password'], safe='')}"
-                 f"@{admin['host']}:{admin['port']}/{db}?ssl=require")
+                 f"@{admin['host']}:{admin['port']}/{db}{url_ssl}")
     store = Store(admin_url)
     await store.init()
     await store.close()
@@ -115,7 +120,7 @@ async def main() -> None:
     finally:
         await conn.close()
 
-    _set_env("DATABASE_URL", f"postgresql+asyncpg://{app_user}:{app_pw}@{admin['host']}:{admin['port']}/{db}?ssl=require")
+    _set_env("DATABASE_URL", f"postgresql+asyncpg://{app_user}:{app_pw}@{admin['host']}:{admin['port']}/{db}{url_ssl}")
     print(f"  schema: {len(metadata.sorted_tables)} tables, owned by {admin['user']}")
     for table, privileges in GRANTS.items():
         print(f"    {table:<17} {privileges}")
