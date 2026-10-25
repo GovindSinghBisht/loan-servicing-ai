@@ -1,201 +1,214 @@
-# AI Loan Servicing — Blue Machines FDE Challenge
+# AI Loan Servicing for Blue Machines
 
-A conversational assistant for a large lender's loan customers: precise, customer-specific answers over
-enterprise systems (CRM, loan management, payments, policy, service operations), with authorized
-actions and a reusable platform for further workflows.
+This is a customer service assistant for a lender's loan customers. It answers questions using the
+customer's own records from the lender's systems (CRM, loan management, payments, policy and service
+operations), carries out requests such as raising a dispute or a waiver after the customer confirms,
+and is built so that new workflows can reuse the same engine.
 
-This repository is the backend: synthetic data, mock enterprise systems, the assistant engine and its
-API. The customer web app (text and voice) is in
+This repository holds the backend: the synthetic data, the mock enterprise systems, the assistant engine
+and its API. The web app for text and voice lives in a separate repository,
 [blue-machines-fde-web](https://github.com/GovindSinghBisht/blue-machines-fde-web).
 
-**Measured results** ([docs/PERFORMANCE.md](docs/PERFORMANCE.md)): 19/19 evaluation conversations pass with
-the real model; first word in 2.1 s (median) with backend failures injected; 1,000 concurrent conversations
-at 100% success on 6 instances, including when one instance crashes mid-run.
+Two documents go with the code. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how the system is
+built, the main decisions and their trade-offs, and how it would move to production.
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md) has the measured results. In short, all 19 evaluation
+conversations pass with the real model, the first word of a reply arrives in about 2.1 seconds, and
+1,000 concurrent conversations completed on six instances, including a run where one instance was killed.
 
-**Design write-up** ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)): architecture, key decisions and their
-trade-offs, known limits, the path to production, and how to add a workflow.
+## How it works
 
-## Architecture
+A customer's message goes to an agent loop where the language model decides which tools it needs. The
+tools fetch data from the enterprise systems, apply the lender's policy rules and do every calculation in
+plain Python. The model then explains what the tools returned. It never works out a number on its own.
 
-```
- Customer ── text / voice ──▶  Agent loop (LLM)     ──▶  Tool layer  ──▶  Enterprise systems
-                               plans + explains          computes +        CRM · Loans · Payments
-                                                         enforces          Policy · Service Ops · Cards
-```
+The agent loop lives in `engine/agent.py`. Independent tool calls run in parallel and the reply streams
+to the browser word by word. Every turn records how long the customer waited for the first word, how
+long the model took and how long the tools took.
 
-- **Agent loop** (`engine/agent.py`): the LLM decides which tools to call, independent calls run in
-  parallel, replies stream token by token. Every turn records time to first token, model time and tool time.
-- **Model-agnostic** (`engine/llm.py`): the LLM sits behind a small provider interface. OpenAI is the
-  default (`LLM_PROVIDER=openai`, `OPENAI_MODEL`); another vendor plugs in by implementing the same interface. Tools, security,
-  confirmations and evaluation are identical whichever model runs.
-- **Tool layer** (`engine/tools/`): typed tools that combine systems and do all arithmetic in
-  `shared/finance.py`, applying policy rules from the policy system's machine-readable parameters. Each
-  result carries the rule checks and source records behind it, so answers are verifiable.
-- **Security**: the verified customer id is injected server-side, never supplied by the model; ownership
-  is checked on every id; actions return a proposal and only execute after the customer confirms in a
-  later turn; every tool call, action and guardrail decision is recorded in the database.
-- **Documents** (`mock_systems/statements.py`): repayment statements are produced by the lender, not the
-  assistant. The assistant requests one; the mock loan system generates a fixed-format PDF from its own
-  records (instalments, principal and interest paid, charges, opening and closing balance), stores it and
-  serves it back by reference only to the customer who owns it. The chat shows a download button.
-- **Login sessions** (`engine/server.py`): sign-in returns a random bearer token that the server stores only
-  as a SHA-256 hash, with idle (30 min) and absolute (8 h) expiry from the governance policy. It travels
-  in the `Authorization` header, never in URLs, so it cannot leak into access logs. A refresh or an API
-  restart does not sign the customer out: a valid session is restored from the database with its
-  conversation. Sign-out revokes the session immediately; revoked sessions are kept for audit.
-- **Resilience** (`engine/clients.py`): per-system timeouts, retries with backoff, circuit breaker,
-  policy caching. An unavailable system degrades the answer instead of failing the conversation.
-- **Packs** (`engine/packs.py`): a workflow is configuration (tool groups + domain instructions) over the
-  shared engine. Two ship: loan servicing and credit card servicing (`engine/tools/cards.py`: charge
-  explanations, late fee reversal, transaction disputes, card block). A session gets the packs that match
-  what the customer holds, so a customer with a loan and a card talks to one assistant. The card workflow
-  was one new tools file (~250 lines) and a pack entry; clients, scoping, policy lookup, confirmations,
-  tickets, audit, the agent loop, web and voice were reused unchanged.
-- **Voice** (server side here; browser side in the web app repo): the same session, tools and
-  history as text; only the reply style changes. Streaming speech recognition in the browser, replies
-  spoken sentence by sentence as they stream (OpenAI `gpt-4o-mini-tts`, browser voice as fallback).
-  Talking over the assistant stops the audio and cancels the turn on the server, which keeps the
-  conversation history valid and lets in-flight confirmations finish. Lookups slower than 0.4 s get a
-  spoken filler ("Let me check your payment records"), and a second one after 2.5 s. Each voice turn logs
-  transcript time, time to first sound and time to first answer audio.
-- **Guardrails and governance** (`engine/governance.py`, rules in `data/governance/policy.json`):
-  - *Input*: OTP / PIN / CVV / password messages are blocked before the model sees them; card numbers,
-    Aadhaar and PAN are redacted; prompt-injection attempts are flagged.
-  - *Output*: a grounding check verifies that every amount, percentage and account id in a reply appears in
-    data the tools returned; anything else is flagged and shown to the customer as unverified.
-  - *Actions*: kill switches, channel restrictions, a per-session action cap and amount limits (e.g.
-    prepayments above Rs 10 lakh go to a relationship manager) are enforced in code before a proposal.
-  - *Channels and models*: voice requires the customer's call-recording consent; only allow-listed models
-    can serve customers. Risk teams change the policy file, not code.
-- **Storage** (`engine/storage.py`): conversations, messages, tool calls, per-turn latency, audit and
-  guardrail events in PostgreSQL (SQLite when `DATABASE_URL` is unset). Writes go through a background
-  queue so the database never adds reply latency. Each customer keeps their **last 5 conversations**
-  (retention policy) and can reopen them in the web app; audit and guardrail events are retained
-  separately. Secrets are redacted before anything is stored.
-- **Observability** (`engine/observability.py`): Langfuse traces per turn, grouped by session and
-  customer: model calls with token usage, every tool call, guardrail decisions. PII is masked before data
-  leaves the service. Enabled by setting `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`.
+The model sits behind a small provider interface in `engine/llm.py`. OpenAI is the default, and another
+vendor can be added by implementing the same three methods. Tools, security checks and evaluation stay
+the same whichever model is used.
 
-## Run with Docker (whole stack, one command)
+The tools are in `engine/tools/`. They combine data from several systems, use the loan maths in
+`shared/finance.py` and read policy rules from machine readable parameters in the policy system. Every
+result includes the rule checks and the source records behind it, so each answer can be traced.
 
-Clone this repo and the [web app](https://github.com/GovindSinghBisht/blue-machines-fde-web) side by side,
-then:
+Security does not depend on the prompt. The signed in customer's ID is attached on the server and the
+model never supplies it. Every account ID the model passes is checked for ownership. Actions return a
+proposal first and only run after the customer confirms in their next message. Every tool call, action
+and guardrail decision is stored in the database.
+
+Repayment statements come from the lender, not from the assistant. The assistant asks for one, the mock
+loan system builds a PDF in a fixed format from its own records and serves it only to the customer who
+owns it. The chat shows a download button.
+
+Sign in returns a random token that the server stores only as a SHA-256 hash. Sessions expire after 30
+minutes of inactivity or 8 hours in total, and both limits come from the governance policy. Refreshing the
+page or restarting the API does not sign the customer out, because a valid session is restored from the
+database together with its conversation.
+
+The client layer in `engine/clients.py` gives each system its own timeout, retries temporary failures,
+stops calling a system that keeps failing and caches policy data for five minutes. If a system is down,
+the assistant says what it cannot see and answers with the rest.
+
+Workflows are configured as packs in `engine/packs.py`. A pack names the tool groups it uses and adds
+domain instructions. Two packs exist, loan servicing and credit card servicing, and a customer who holds
+both products gets one assistant that covers both. Adding the card workflow took one new tools file and
+a pack entry. The engine, web app and voice were reused as they were.
+
+Voice uses the same session, tools and history as text. The browser handles speech recognition, and
+replies are spoken sentence by sentence as they stream in, using OpenAI text to speech with the browser
+voice as a fallback. If the customer talks over the assistant, playback stops and the server cancels the
+turn while keeping the conversation history consistent. A lookup that takes longer than 0.4 seconds gets
+a short spoken filler.
+
+Guardrails and governance are in `engine/governance.py`, with the rules in
+`data/governance/policy.json`. Messages containing an OTP, PIN, CVV or password are blocked before the
+model sees them, and card, Aadhaar and PAN numbers are redacted. After a reply, a check confirms that every
+amount, percentage and account ID in it came from a tool result. Actions are limited by kill switches,
+channel rules, a cap per session and amount limits. Prepayments above Rs 10 lakh, for example, go to a
+relationship manager. Risk teams can change these rules in the policy file without a code change.
+
+Storage is in `engine/storage.py`. Conversations, messages, tool calls, timings, audit events and
+guardrail events go to PostgreSQL, or to SQLite when no database is configured. Writes go through a
+background queue so the database never slows a reply down. Each customer keeps their last five
+conversations, while audit and guardrail events are kept separately.
+
+Tracing goes to Langfuse when its keys are set. Each turn becomes one trace with the model calls, token
+usage, tool calls and guardrail decisions, and personal data is masked before anything leaves the server.
+
+## Running with Docker
+
+Clone this repository and the web app next to each other, then run:
 
 ```bash
-cp .env.example .env                      # add OPENAI_API_KEY (and DATABASE_URL, Langfuse keys if used)
+cp .env.example .env
+```
+```bash
 DOMAIN=localhost docker compose up -d --build
 ```
 
-Open https://localhost (Caddy's local certificate; accept the browser warning). `docker-compose.yml` runs
-four containers: Caddy (HTTPS, the only published ports), the web app, the API and the mock systems.
-Calls to `/api/*` go to the API and everything else to the web app, all on one HTTPS origin. For a
-public server, point a DNS record at it and use `DOMAIN=loan.example.com`; Caddy obtains a Let's
-Encrypt certificate automatically. Set `DEMO_ACCESS_CODE` in `.env` so sign-in needs a code you share
-only with invited users. Sign-ins and messages are rate-limited (`rate_limits` in
-`data/governance/policy.json`). Also set a monthly spend limit on the OpenAI key.
+Add your `OPENAI_API_KEY` to `.env` first, and the database and Langfuse settings if you use them. Then
+open https://localhost and accept the browser warning for Caddy's local certificate.
 
-Prebuilt images: set `BACKEND_IMAGE` and `WEB_IMAGE` to registry images (e.g. Amazon ECR) and run
-`docker compose pull && docker compose up -d --no-build`; the server then needs only `docker-compose.yml`,
-`deploy/Caddyfile` and `.env`. Build for the server's architecture (for x86 instances:
-`docker buildx build --platform linux/amd64 ...`).
+The compose file runs four containers. Caddy handles HTTPS and is the only container with public ports.
+Requests to `/api/` go to the API and everything else goes to the web app, so the whole app is served
+from one HTTPS address. On a public server, point a DNS record at the machine and set `DOMAIN` to that
+name, and Caddy will get a Let's Encrypt certificate on its own.
 
-## Quick start (local development)
+For a public demo, set `DEMO_ACCESS_CODE` in `.env` so that sign in also asks for a code you share only
+with invited people. Sign ins and messages are rate limited, and the limits are in the `rate_limits`
+section of the governance policy. It is also worth setting a monthly spend limit on the OpenAI key.
 
-Requires Python 3.10+ with [uv](https://docs.astral.sh/uv/). The web app additionally needs Node.js 20+.
+To run images from a registry such as Amazon ECR instead of building on the server, set `BACKEND_IMAGE`
+and `WEB_IMAGE` and run `docker compose pull` followed by `docker compose up -d --no-build`. The server
+then only needs `docker-compose.yml`, `deploy/Caddyfile` and `.env`. Build the images for the server's
+architecture, which for x86 instances means `docker buildx build --platform linux/amd64`.
+
+## Running locally for development
+
+You need Python 3.10 or newer with [uv](https://docs.astral.sh/uv/), and Node.js 20 or newer for the web
+app. Install the dependencies, create your `.env` with an OpenAI key, and generate the synthetic data:
 
 ```bash
 uv sync
-cp .env.example .env                      # add OPENAI_API_KEY
-uv run python -m datagen.generate         # synthetic data (deterministic)
+```
+```bash
+cp .env.example .env
+```
+```bash
+uv run python -m datagen.generate
 ```
 
-Then, in two terminals:
+Start the six mock systems in one terminal and the API in another:
 
 ```bash
-uv run python -m mock_systems.run                 # 1: six mock systems on ports 8101-8106
-uv run uvicorn engine.server:app --port 8000      # 2: assistant API
+uv run python -m mock_systems.run
+```
+```bash
+uv run uvicorn engine.server:app --port 8000
 ```
 
-Then run the [web app](https://github.com/GovindSinghBisht/blue-machines-fde-web) (`npm install && npm run dev`,
-http://localhost:3000) and sign in with a demo customer (OTP `123456`). The API allows the web app's
-origin via `WEB_ORIGINS` (default `http://localhost:3000`). A terminal client is also available:
-`uv run python -m engine.cli --phone +919800000001`.
+Then start the [web app](https://github.com/GovindSinghBisht/blue-machines-fde-web) with `npm install`
+and `npm run dev`, open http://localhost:3000 and sign in as one of the demo customers. The OTP is
+`123456`. There is also a terminal client:
 
-To work on the UI without an LLM key, run `uv run python -m tests.offline_server` instead of terminal 2:
-a keyword-routed stand-in that calls the real tools.
+```bash
+uv run python -m engine.cli --phone +919800000001
+```
 
-Database: without configuration a local SQLite file (`data/local.db`) is used. For PostgreSQL, put the
-server's admin credentials in `.env` (`DB_HOST`, `DB_ADMIN_USER`, `DB_ADMIN_PASSWORD`) and run once:
+To work on the interface without an OpenAI key, run `uv run python -m tests.offline_server` instead of the
+API. It uses a simple keyword based stand in for the model that still calls the real tools.
+
+Without any database settings the API uses a local SQLite file. To use PostgreSQL, put the server's admin
+credentials in `.env` as `DB_HOST`, `DB_ADMIN_USER` and `DB_ADMIN_PASSWORD`, and run this once:
 
 ```bash
 uv run python -m engine.db_setup
 ```
 
-It creates the `blue_machines` database and its tables as the admin, then a least-privilege
-`blue_machines_app` user with only the table rights the code needs: read/write on conversations,
-retention deletes, and **append-only** access to audit and guardrail events, so even a compromised app
-cannot rewrite the audit trail. No CREATE / DROP / ALTER, and other roles cannot connect to the
-database. It writes `DATABASE_URL` for the app user into `.env`; remove the admin password afterwards.
-`/api/health` reports the active storage backend and whether tracing is on.
+It creates the database and its tables as the admin, then a separate application user that only has the
+table rights the code needs. That user can read and write conversations but can only add rows to the
+audit and guardrail tables, so even a compromised application could not rewrite the audit trail. The
+script writes the application user's `DATABASE_URL` into `.env`, and you can remove the admin password
+afterwards.
 
-Tests and evaluation:
+The tests run without an API key. The evaluation runs 19 graded conversations against the real model and
+reports latency:
 
 ```bash
-uv run pytest -q                          # math, data, tools, agent, API, voice, storage, guardrails (no key needed)
-uv run python -m datagen.validate         # data integrity + persona stories
-uv run python -m evals.run                # 19 graded conversations against the real model + latency report
+uv run pytest -q
+```
+```bash
+uv run python -m evals.run
 ```
 
-Change a system's behaviour live (e.g. make payments slow and flaky for a demo):
+You can also change how a mock system behaves while it runs. This makes the payments system slow and
+unreliable, which is useful in a demo:
 
 ```bash
 curl -X PUT localhost:8103/admin/chaos -H 'content-type: application/json' -d '{"p50_ms": 1500, "error_rate": 0.3}'
 ```
 
-## Layout
+## Repository layout
 
-| Path | What |
+| Path | Contents |
 |---|---|
-| `shared/finance.py` | Deterministic loan math (EMI, amortization with rate resets and prepayments, prepayment impact). |
-| `data/policies/` | Versioned policy clauses with machine-readable `params` (one superseded version on purpose). |
-| `datagen/` | Synthetic data generator, demo personas, validator. |
-| `mock_systems/` | One FastAPI app per enterprise system, with fault injection and idempotent writes. |
-| `engine/` | Resilient clients, tool registry and confirmation gate, tool packs, agent loop, LLM providers, guardrails and governance, storage, tracing, web API (`server.py`), terminal client, database setup. |
-| `data/governance/policy.json` | Governance policy: retention, PII handling, action limits and kill switches, voice consent, model allow-list. |
-| `evals/` | Graded conversations and the latency/accuracy runner. |
-| `tests/` | Unit and integration tests (in-process systems, scripted model). |
+| `shared/finance.py` | Loan maths: EMI, schedules with rate resets and prepayments, prepayment impact |
+| `data/policies/` | Versioned policy clauses with machine readable parameters |
+| `datagen/` | Synthetic data generator, demo personas and a validator |
+| `mock_systems/` | One FastAPI app per enterprise system, with fault injection and idempotent writes |
+| `engine/` | Clients, tools, packs, agent loop, model provider, governance, storage, tracing and the web API |
+| `data/governance/policy.json` | Runtime rules for sessions, retention, PII, actions, rate limits and models |
+| `evals/` | Graded conversations and the evaluation runner |
+| `loadtest/` | The concurrent conversation load test |
+| `tests/` | Unit and integration tests |
 
-## Generated systems
+## The data
 
-All records are as of **2026-10-22** (`AS_OF`); mock services treat this as "today".
+All records are dated as of 22 October 2026, and the mock systems treat that day as today. There are five
+data files, one per system: customers and their interaction history, loans with full repayment schedules
+and a charges ledger, every payment attempt including failures and duplicate debits, service tickets
+with their SLAs, and credit cards with statements, transactions and disputes.
 
-| File | System | Contents |
+The data is consistent across systems. An instalment's status follows from its payment attempts, charges
+use the policy version that was in force on the day, failures caused by the bank have their charges
+waived, and floating rate schedules follow every change in the benchmark rate.
+
+Four demo customers are built to show specific situations.
+
+| Customer | Phone | What it shows |
 |---|---|---|
-| `crm.json` | Customer CRM | customers, contact details, consents, interaction history |
-| `loans.json` | Loan Management | loans with full schedules, rate history, reset preference, NACH mandate; charges ledger |
-| `payments.json` | Payments | every debit attempt: NACH presentations, failures with reason codes, customer payments, duplicate debits |
-| `service_ops.json` | Service Operations | ticket categories with SLA, tickets with history and SLA breach status |
-| `cards.json` | Cards (workflow #2) | cards, monthly statements, transactions, disputes |
+| Priya Sharma | +91 98000 00001 | Home loan EMI went up in October after the benchmark rate rose. Two failed debits in six months, one charged and one waived because the bank caused it. A 50,000 prepayment with no charge, an eligible bounce charge waiver, and a top up loan she cannot get because of the recent bounce |
+| Arjun Mehta | +91 98000 00002 | Personal loan with only seven EMIs paid and October overdue, so prepayment is blocked for two reasons and foreclosure for one. His card autopay failed, he paid four days late and was charged a 950 rupee late fee that can be reversed |
+| Kavya Iyer | +91 98000 00003 | Loan against property set to keep the EMI fixed, so a rate rise extended the tenure instead. October's EMI was debited twice and the refund ticket is past its SLA. She also has an open card dispute |
+| Rohan Gupta | +91 98000 00004 | Two active loans, so "my loan" is ambiguous. His personal loan is past 24 EMIs, so prepayment is allowed within the free limit |
 
-Data is consistent across systems, not just random rows. Instalment status follows from the payment
-attempts, charges are levied by the policy version in force on the date (`LP-CHG-001` v1 vs v2), bank-side
-failures get the charge waived (`LP-CHG-002`), and floating-rate schedules replay every EBLR change.
+Another 200 background customers make the volumes realistic, with about 224 loans, 5,700 payments and
+7,000 card transactions.
 
-## Demo personas
+## Simplifications
 
-| Customer | Login phone | Built to show |
-|---|---|---|
-| Priya Sharma `CUST100001` | +91-9800000001 | Home loan EMI up in Oct because EBLR rose 8.50 → 9.00; 2 failed debits in the last 6 months (one chargeable, one bank-side and waived); prepay ₹50,000 with no charge; bounce-charge waiver eligible; top-up **not** eligible (recent bounce) |
-| Arjun Mehta `CUST100002` | +91-9800000002 | Personal loan with 7 EMIs paid and Oct EMI overdue: part-prepayment blocked for two reasons (lock-in and overdue), foreclosure blocked by lock-in; card autopay failed, paid 4 days late, ₹950 + GST late fee (reversal eligible) |
-| Kavya Iyer `CUST100003` | +91-9800000003 | LAP on tenure-reset: rate rose, EMI unchanged, tenure extended; Oct EMI debited twice, refund pending, ticket past SLA; open card dispute |
-| Rohan Gupta `CUST100004` | +91-9800000004 | Two active loans ("my loan" is ambiguous); personal loan past 24 EMIs, so part-prepayment allowed with a 25% free limit and 2% foreclosure slab |
-
-Plus 200 background customers (risk-weighted failure rates, closed loans, spread revisions, prepayments)
-for realistic volumes: ~224 loans, ~5.7k payments, ~7k card transactions.
-
-## Simplifications (deliberate)
-
-- Monthly-rest interest; EMIs rounded to the rupee with the last instalment absorbing rounding.
-- Rate changes apply from the first EMI due after the effective date.
-- Charges on a late instalment are collected with the next EMI.
-- Card finance charges apply only to balances carried forward, not retroactively to transaction dates.
+Interest is calculated on a monthly rest, EMIs are rounded to the rupee and the last instalment absorbs
+the rounding. A rate change applies from the first EMI due after its effective date. Charges on a late
+instalment are collected with the next EMI. Card finance charges apply only to balances carried forward.
