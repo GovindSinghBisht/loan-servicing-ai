@@ -11,3 +11,9 @@ data/*.db
 data/documents/
 evals/results/
 loadtest/results/
+
+# credentials and keys
+.env.*
+!.env.example
+*.pem
+*.key
